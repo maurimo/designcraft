@@ -158,6 +158,15 @@ pub fn specs() -> Vec<CommandSpec> {
             v["lines"] = json!(cs.line_count());
             Ok(v)
         }),
+        cmd!(
+            query "story.lines",
+            "Story Lines",
+            [],
+            None,
+            "{story? | frame? | all?: bool, glyphs?: bool (default true)} → [{story, text, paras: [{range, props}], frames: [{frame, columns, lines: [{column, baseline, x0, x1, endX, range, para, hyphenated, spacing, glyphs: [[x, adv, gid, font, size, char, byte]]}]}]}] — the composed lines (frame-local points), for checking line breaks and glyph positions",
+            has_doc,
+            story_lines
+        ),
         cmd!("type.fillWithPlaceholder", "Fill with Placeholder Text", ["Type"], None, "{frame?, story?}", has_text_or_frames, fill_placeholder),
         cmd!(
             "type.char",
@@ -389,6 +398,67 @@ pub fn specs() -> Vec<CommandSpec> {
             set_features
         ),
     ]
+}
+
+/// `story.lines`: one story's (or every story's) composed lines, glyph positions and resolved
+/// paragraph settings.
+fn story_lines(s: &mut Session, p: &Value) -> Result<Value> {
+    let all = p.get("all").and_then(Value::as_bool).unwrap_or(false);
+    let with_glyphs = p.get("glyphs").and_then(Value::as_bool).unwrap_or(true);
+    let sids: Vec<StoryId> =
+        if all { s.doc()?.doc.stories.keys().copied().collect() } else { vec![story_of(s, p).ok_or_else(|| bad("story.lines", "no story"))?] };
+    let mut out = Vec::with_capacity(sids.len());
+    for sid in sids {
+        let st = s.doc()?;
+        let story = st.doc.story(sid).ok_or(designcraft_doc::DocError::NoStory(sid))?;
+        let paras: Vec<Value> = story
+            .para_ranges()
+            .into_iter()
+            .zip(&story.paras)
+            .map(|(r, f)| json!({"range": [r.start, r.end], "style": f.style, "props": st.doc.styles.resolve_para(f).0}))
+            .collect();
+        let text = story.text.clone();
+        let cs = s.cache.get(&st.doc, sid, None);
+        let frames: Vec<Value> = cs
+            .frames
+            .iter()
+            .map(|f| {
+                let lines: Vec<Value> = f
+                    .lines
+                    .iter()
+                    .map(|l| {
+                        let mut v = json!({
+                            "column": l.column, "baseline": l.baseline, "x0": l.x0, "x1": l.x1, "endX": l.end_x,
+                            "range": [l.range.start, l.range.end], "para": l.para, "hyphenated": l.hyphenated, "spacing": l.spacing,
+                        });
+                        if with_glyphs {
+                            v["glyphs"] = l
+                                .glyphs
+                                .iter()
+                                .map(|g| {
+                                    let size = g.sy * g.face.units_per_em();
+                                    json!([
+                                        g.x,
+                                        g.adv,
+                                        g.gid,
+                                        g.face.postscript_name().unwrap_or_default(),
+                                        size,
+                                        g.rendered_char.to_string(),
+                                        g.byte
+                                    ])
+                                })
+                                .collect();
+                        }
+                        v
+                    })
+                    .collect();
+                let columns: Vec<[f64; 4]> = f.columns.iter().map(|c| [c.x0, c.y0, c.x1, c.y1]).collect();
+                json!({"frame": f.frame.0, "columns": columns, "lines": lines})
+            })
+            .collect();
+        out.push(json!({"story": sid.0, "text": text, "paras": paras, "frames": frames, "overset": cs.overset_at}));
+    }
+    Ok(Value::Array(out))
 }
 
 pub(crate) fn story_of(s: &Session, p: &Value) -> Option<StoryId> {
@@ -3451,6 +3521,36 @@ mod story_query_contract_tests {
         assert_eq!(s.execute("story.get", &json!({"frame":f["id"]})).unwrap()["text"], "");
         s.execute("text.select", &json!({"story":f["story"],"anchor":0})).unwrap();
         assert_eq!(s.execute("story.get", &json!({})).unwrap()["text"], "");
+    }
+
+    #[test]
+    fn story_lines_lists_each_line_with_its_glyphs_and_paragraph_settings() {
+        let mut s = crate::Session::new();
+        s.execute("file.new", &json!({})).unwrap();
+        assert!(s.execute("story.lines", &json!({"story":999})).unwrap_err().to_string().contains("no such story"));
+        let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho";
+        let f = s.execute("frame.create", &json!({"rect":[36,36,136,400],"content":"text","text":text})).unwrap();
+        let v = s.execute("story.lines", &json!({"frame":f["id"]})).unwrap();
+        let story = &v[0];
+        assert_eq!(story["text"], text);
+        assert_eq!(story["paras"][0]["range"], json!([0, text.len()]));
+        assert!(story["paras"][0]["props"]["align"].is_string());
+        let lines = story["frames"][0]["lines"].as_array().unwrap();
+        assert!(lines.len() > 1, "the narrow frame breaks the text");
+        // The lines cover the text in order, and each glyph sits after the one before it.
+        let mut at = 0;
+        for l in lines {
+            let r = l["range"].as_array().unwrap();
+            assert_eq!(r[0].as_u64().unwrap() as usize, at);
+            at = r[1].as_u64().unwrap() as usize;
+            let xs: Vec<f64> = l["glyphs"].as_array().unwrap().iter().map(|g| g[0].as_f64().unwrap()).collect();
+            assert!(xs.windows(2).all(|w| w[1] > w[0]));
+            assert!(l["glyphs"][0][4].as_f64().unwrap() > 0.0, "font size");
+        }
+        assert_eq!(at, text.len());
+        let all = s.execute("story.lines", &json!({"all":true,"glyphs":false})).unwrap();
+        assert_eq!(all.as_array().unwrap().len(), 1);
+        assert!(all[0]["frames"][0]["lines"][0].get("glyphs").is_none());
     }
 
     #[test]

@@ -348,6 +348,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-18** · New `story.lines` query: every composed line with its baseline, extent, range, hyphenation and spacing, and each glyph's position, advance, glyph id, font and size. No readiness percentage change.
 - **2026-10-18** · Italian hyphenation (hyph-it, MIT), including breaks before an elision (`del-l’area`, `an-ch’essi`); words with an apostrophe hyphenate part by part. No readiness percentage change.
 - **2026-10-18** · IDML justification settings written as `NaN` (QuarkXPress does for settings it can't map) are inherited instead of breaking line spacing. No readiness percentage change.
 - **2026-10-16** · Type › Reload Fonts (`font.reload`): fonts installed, edited or removed while DesignCraft runs are read again without a restart, and the open documents recompose with them (#328, #547). An edited font file is noticed by its length and modification time; bundled, added and document fonts stay as they are. InDesign does this by itself, so noticing changes automatically is still open (gap 6). No readiness percentage change.
