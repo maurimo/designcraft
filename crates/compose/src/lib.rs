@@ -3242,7 +3242,10 @@ fn layout_line(
             g.shift += cjk_alignment_shift(g, &reference);
         }
     }
-    if hyphen && let Some(g) = line.last() {
+    if hyphen && let Some(g) = line.last_mut() {
+        // The letter's kerning was with the next letter, which starts the next line.
+        g.adv -= g.kern;
+        g.kern = 0.0;
         let h = shape::hyphen_after(g);
         line.push(h);
     }

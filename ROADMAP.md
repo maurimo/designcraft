@@ -348,6 +348,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-18** · The font's kerning between a word space and the next letter now applies (the word cache dropped it), a kerning pair sits whole on its first glyph so a line ending there measures it, and a hyphenated line drops the kerning with the letter that moved to the next line. No readiness percentage change.
 - **2026-10-18** · New `story.lines` query: every composed line with its baseline, extent, range, hyphenation and spacing, and each glyph's position, advance, glyph id, font and size. No readiness percentage change.
 - **2026-10-18** · Italian hyphenation (hyph-it, MIT), including breaks before an elision (`del-l’area`, `an-ch’essi`); words with an apostrophe hyphenate part by part. No readiness percentage change.
 - **2026-10-18** · IDML justification settings written as `NaN` (QuarkXPress does for settings it can't map) are inherited instead of breaking line spacing. No readiness percentage change.

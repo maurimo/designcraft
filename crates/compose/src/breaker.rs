@@ -454,7 +454,8 @@ fn items(glyphs: &[Glyph], hyph_after: &[bool], emergency_after: &[bool], sp: &S
                 push_inword(&mut it, &mut ig, p, i + 1, sp);
             } else if hyph_after[i] {
                 let hw = hyphen_width(g, &mut hy_cache);
-                let mut p = Item::penalty(hw, sp.hyphen_penalty, true);
+                // Broken here, the letter loses its kerning with the next one.
+                let mut p = Item::penalty((hw - g.kern).max(hw * 0.01), sp.hyphen_penalty, true);
                 p.auto = true;
                 p.zone_from = last_space;
                 if sp.optical {
@@ -939,7 +940,7 @@ pub fn greedy(
                         last_natural = last_ok;
                     }
                 } else if hyph_after[i] && may_hyphenate(hyphens) {
-                    let hy = hyphen_width(g, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 };
+                    let hy = hyphen_width(g, &mut hy_cache) * if sp.optical { 1.0 - hang('-').1 } else { 1.0 } - g.kern;
                     if x + hy <= w + shrink + FIT_EPS {
                         last_ok = Some((i + 1, true));
                     }

@@ -7316,3 +7316,122 @@ fn greek_text_gets_greek_hyphenation() {
     let el = hyphen::Lang::for_language("Greek").unwrap();
     assert_eq!(hyphen::hyphen_points_in("ανθρωπος", &hyphen::Limits::default(), el), vec![2, 5]);
 }
+
+/// `font` (an sfnt) rebuilt without the tables in `drop` and with the tables in `add`.
+fn sfnt_with(font: &[u8], drop: &[&[u8; 4]], add: Vec<([u8; 4], Vec<u8>)>) -> Vec<u8> {
+    let be32 = |at: usize| u32::from_be_bytes(font[at..at + 4].try_into().unwrap()) as usize;
+    let count = u16::from_be_bytes([font[4], font[5]]) as usize;
+    let mut tables: Vec<([u8; 4], Vec<u8>)> = (0..count)
+        .map(|t| 12 + 16 * t)
+        .map(|r| (font[r..r + 4].try_into().unwrap(), font[be32(r + 8)..be32(r + 8) + be32(r + 12)].to_vec()))
+        .filter(|(tag, _)| !drop.contains(&tag))
+        .collect();
+    tables.extend(add);
+    tables.sort_by_key(|t| t.0);
+    let n = tables.len() as u16;
+    let selector = 15 - n.leading_zeros() as u16;
+    let range = 16u16 << selector;
+    let mut out = font[..4].to_vec();
+    for v in [n, range, selector, n * 16 - range] {
+        out.extend(v.to_be_bytes());
+    }
+    let mut body: Vec<u8> = Vec::new();
+    let start = 12 + 16 * tables.len();
+    for (tag, data) in &tables {
+        out.extend(tag);
+        out.extend(0u32.to_be_bytes());
+        out.extend(((start + body.len()) as u32).to_be_bytes());
+        out.extend((data.len() as u32).to_be_bytes());
+        body.extend(data);
+        body.resize(body.len().next_multiple_of(4), 0);
+    }
+    out.extend(body);
+    out
+}
+
+/// A legacy `kern` table (format 0, horizontal) with the given glyph pairs.
+fn kern_table(pairs: &[(u32, u32, i16)]) -> Vec<u8> {
+    let mut pairs = pairs.to_vec();
+    pairs.sort();
+    let n = pairs.len() as u16;
+    let selector = 15 - n.leading_zeros() as u16;
+    let range = 6u16 << selector;
+    let mut v = Vec::new();
+    for w in [0u16, 1, 0, 14 + 6 * n, 1, n, range, selector, 6 * n - range] {
+        v.extend(w.to_be_bytes());
+    }
+    for (a, b, k) in pairs {
+        v.extend((a as u16).to_be_bytes());
+        v.extend((b as u16).to_be_bytes());
+        v.extend(k.to_be_bytes());
+    }
+    v
+}
+
+/// [`test_font`] named `family` with GPOS replaced by a legacy `kern` table of `pairs` (glyph ids
+/// of Source Sans 3) and, when `no_gsub`, without GSUB (no `smcp`).
+fn kern_test_font(family: &str, pairs: impl Fn(&dyn Fn(char) -> u32) -> Vec<(u32, u32, i16)>, no_gsub: bool) -> Vec<u8> {
+    let source = designcraft_fonts::FontDb::global().face("Source Sans 3", "Regular");
+    let gid = |c: char| source.glyph_for(c);
+    let drop: &[&[u8; 4]] = if no_gsub { &[b"GPOS", b"GSUB"] } else { &[b"GPOS"] };
+    sfnt_with(&test_font(family, Some(&[])), drop, vec![(*b"kern", kern_table(&pairs(&gid)))])
+}
+
+/// The visible glyphs of the first line of `text` set at 20 pt in `family`: (char, x, advance, sx, gid).
+fn set_line(d: &mut Document, sid: designcraft_doc::StoryId, family: &str) -> Vec<(char, f64, f64, f64, u32)> {
+    let len = d.story(sid).unwrap().text.len();
+    d.story_mut(sid).unwrap().format_chars(0..len, |f| {
+        f.over.font_family = Some(family.into());
+        f.over.font_style = Some("Regular".into());
+        f.over.size = Some(20.0);
+    });
+    let cs = compose_story(d, sid, &ComposeOptions::default());
+    cs.frames[0].lines[0].glyphs.iter().filter(|g| g.visible).map(|g| (g.rendered_char, g.x, g.adv, g.sx, g.gid)).collect()
+}
+
+/// A font's kerning between a word space and the next word applies, though words are shaped one
+/// by one; and a kerning pair (which the shaper splits between its two glyphs) sits whole on the
+/// advance of its first glyph, so a line ending there measures it.
+#[test]
+fn kerning_applies_across_word_spaces_and_sits_on_the_first_glyph() {
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(kern_test_font("Kern Space 01", |g| vec![(g(' '), g('V'), -200), (g('.'), g(' '), -100)], false));
+    let face = db.face("Kern Space 01", "Regular");
+    assert_eq!(face.family, "Kern Space 01");
+    let k = 20.0 / face.upem;
+    let adv = |c: char| face.advance(face.glyph_for(c)) * k;
+    let (mut d, sid, _) = doc_with("a V. b", Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs::default());
+    let g = set_line(&mut d, sid, "Kern Space 01");
+    let at = |c: char| g.iter().find(|x| x.0 == c).unwrap();
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    assert!(close(at('V').1 - at('a').1, adv('a') + adv(' ') - 200.0 * k), "{g:?}");
+    assert!(close(at('.').2, adv('.') - 100.0 * k), "the period carries its whole kerning with the space: {g:?}");
+    assert!(close(at('b').1 - at('.').1, adv('.') - 100.0 * k + adv(' ')), "{g:?}");
+}
+
+/// A line hyphenated after a letter drops the letter's kerning with the next letter, which now
+/// starts the next line.
+#[test]
+fn hyphenated_lines_drop_the_next_letters_kerning() {
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(kern_test_font("Kern Hyphen 1", |g| vec![(g('n'), g('a'), -60), (g('n'), g('-'), -80)], false));
+    let face = db.face("Kern Hyphen 1", "Regular");
+    let k = 20.0 / face.upem;
+    let adv = |s: &str| s.chars().map(|c| face.advance(face.glyph_for(c)) * k).sum::<f64>();
+    // Room for "hyphen-" but not "hyphena-": English breaks hy-phen-ation.
+    let width = adv("hyphen-") + 1.0;
+    for composer in [Composer::Paragraph, Composer::SingleLine] {
+        let para = ParaAttrs { composer: Some(composer), align: Some(Align::Left), ..Default::default() };
+        let (mut d, sid, _) = doc_with("hyphenation words", Rect::new(0.0, 0.0, width, 200.0), para);
+        let g = set_line(&mut d, sid, "Kern Hyphen 1");
+        let text: String = g.iter().map(|x| x.0).collect();
+        assert_eq!(text, "hyphen-", "{composer:?}");
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let line = &cs.frames[0].lines[0];
+        let placed = line.glyphs.iter().filter(|x| x.visible).nth(6).unwrap();
+        // The hyphen's pen position (where its advance starts) follows the n's own width.
+        let n = g[5];
+        assert!((placed.x - placed.dx - n.1 - adv("n")).abs() < 1e-6, "{composer:?}: no kerning with the a of the next line: {g:?}");
+        assert!(placed.dx.abs() < 1e-6, "{composer:?}: hyphen drawn {} after its pen position", placed.dx);
+    }
+}

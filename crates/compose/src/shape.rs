@@ -24,6 +24,9 @@ pub struct Glyph {
     pub generated_text: Option<Box<str>>,
     /// Advance in points (tracking and horizontal scale applied).
     pub adv: f64,
+    /// The part of `adv` the shaper adjusted for the next glyph (pair kerning), in points: a line
+    /// that breaks after this glyph doesn't have that neighbour.
+    pub kern: f64,
     pub dx: f64,
     pub dy: f64,
     /// Font units → points (incl. horizontal / vertical scale).
@@ -967,7 +970,8 @@ fn word_map(key: WordKey) -> Arc<RwLock<WordMap>> {
 
 /// Shape `src` word by word through a cache (like a browser's word cache): the text is split
 /// after each U+0020 so repeated words are shaped once. Shaping does not cross word spaces in the
-/// scripts we lay out, and clusters stay byte offsets into `src`.
+/// scripts we lay out, except for the pair adjustment between a space and the next character,
+/// which is applied from the pair shaped alone. Clusters stay byte offsets into `src`.
 fn shape_cached(
     face: &FontFace,
     src: &str,
@@ -986,7 +990,17 @@ fn shape_cached(
             designcraft_fonts::shape_with_context(face, s, feats, map, context)
         }
     };
-    if src.len() < 2 || !src.contains(' ') || src.chars().any(designcraft_fonts::is_rtl) {
+    if src.chars().any(designcraft_fonts::is_rtl) {
+        return shape(src, ShapeContext { before, after, language: lang });
+    }
+    let shape = |s: &str, context: ShapeContext<'_>| {
+        let mut g = shape(s, context);
+        if !vertical {
+            fold_pair_offsets(face, &mut g);
+        }
+        g
+    };
+    if src.len() < 2 || !src.contains(' ') {
         return shape(src, ShapeContext { before, after, language: lang });
     }
     let words = word_map((face.id(), vertical, caps, format!("{feats:?}"), lang));
@@ -1003,6 +1017,21 @@ fn shape_cached(
             *f = Some(g);
         }
     }
+    // Pieces end at their space, so the font's pair adjustment between that space and the next
+    // word's first character (`kern` "space V") is shaped on its own, as the pair, and cached.
+    let pairs: Vec<Option<String>> =
+        pieces.windows(2).map(|w| w[1].chars().next().filter(|c| w[0].ends_with(' ') && *c != ' ').map(|c| format!(" {c}"))).collect();
+    let mut pair_glyphs: Vec<Option<Arc<[ShapedGlyph]>>> = {
+        let r = words.read().unwrap_or_else(|e| e.into_inner());
+        pairs.iter().map(|p| p.as_deref().and_then(|p| r.get(p).cloned())).collect()
+    };
+    for (k, f) in pair_glyphs.iter_mut().enumerate() {
+        if let (None, Some(Some(p))) = (&f, pairs.get(k)) {
+            let g: Arc<[ShapedGlyph]> = shape(p, ShapeContext { language: lang, ..Default::default() }).into();
+            fresh.push((p.as_str().into(), g.clone()));
+            *f = Some(g);
+        }
+    }
     if !fresh.is_empty() {
         let mut w = words.write().unwrap_or_else(|e| e.into_inner());
         if w.len() + fresh.len() > WORD_CACHE_MAX {
@@ -1010,14 +1039,41 @@ fn shape_cached(
         }
         w.extend(fresh);
     }
-    let mut out = Vec::with_capacity(src.len());
+    let mut out: Vec<ShapedGlyph> = Vec::with_capacity(src.len());
     let mut start = 0;
-    for (piece, glyphs) in pieces.iter().zip(found) {
+    for (k, (piece, glyphs)) in pieces.iter().zip(found).enumerate() {
         let glyphs = glyphs.unwrap_or_else(|| Arc::from(Vec::new()));
+        let first = out.len();
         out.extend(glyphs.iter().map(|g| ShapedGlyph { cluster: g.cluster + start, ..*g }));
         start += piece.len();
+        // The space ending the previous piece takes the pair's kerning (folded onto the space, see
+        // [`fold_pair_offsets`]) when the pair shaped as those two glyphs.
+        if let (Some(Some(pair)), Some(space_at)) = (k.checked_sub(1).and_then(|j| pair_glyphs.get(j)), first.checked_sub(1))
+            && let [s, c] = &pair[..]
+            && out.get(first).is_some_and(|g| g.gid == c.gid)
+            && let Some(g) = out.get_mut(space_at).filter(|g| g.gid == s.gid)
+        {
+            g.x_advance = g.x_advance.saturating_add(s.x_advance.saturating_sub(face.advance(s.gid) as i32));
+        }
     }
     out
+}
+
+/// The shaper sets a kerning pair (from a `kern` table) as half on the first glyph's advance and
+/// half on the second's advance and offset. Fold each horizontal offset between two spacing glyphs
+/// into the advance before it: glyphs land where they did, and each glyph's advance holds its
+/// whole kerning with the next one (what a line that breaks after it measures).
+fn fold_pair_offsets(face: &FontFace, glyphs: &mut [ShapedGlyph]) {
+    for j in 1..glyphs.len() {
+        let (left, right) = glyphs.split_at_mut(j);
+        let (Some(a), Some(b)) = (left.last_mut(), right.first_mut()) else { continue };
+        if b.x_offset == 0 || b.y_offset != 0 || a.x_advance == 0 || b.x_advance == 0 || face.glyph_is_mark(a.gid) || face.glyph_is_mark(b.gid) {
+            continue;
+        }
+        a.x_advance = a.x_advance.saturating_add(b.x_offset);
+        b.x_advance = b.x_advance.saturating_sub(b.x_offset);
+        b.x_offset = 0;
+    }
 }
 
 fn metrics(face: &FontFace, p: &CharProps, auto_leading: TypeEnv) -> (f64, f64, f64, f64, f64, f64, f64, f64) {
@@ -1059,6 +1115,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         ch,
         generated_text: None,
         adv: 0.0,
+        kern: 0.0,
         dx: 0.0,
         dy: 0.0,
         sx: k * p.h_scale,
@@ -1150,6 +1207,7 @@ fn shape_segment(
         upright_feats.extend(feature("-hkna"));
         upright_feats.extend(feature("vkna"));
     }
+    let advance = face.advances();
     let space = face.advance(face.glyph_for(' ')) * k * hs;
     // The language picks the font's localized forms (`locl`); the text around the run lets
     // letters join across a change of style.
@@ -1192,7 +1250,16 @@ fn shape_segment(
             Box::from(src.get(sg.cluster..end).unwrap_or(""))
         });
         // Upright: down the line is the shaper's -y, across it (text space -y) its x.
-        let mut adv = if up { -(sg.y_advance as f64) * k_v } else { sg.x_advance as f64 * k * hs };
+        // What the shaper added to the glyph's own width is its kerning with the next glyph.
+        // A glyph the shaper gave no advance (a combining mark) stays without one.
+        let (mut adv, kern) = if up {
+            (-(sg.y_advance as f64) * k_v, 0.0)
+        } else if sg.x_advance == 0 {
+            (0.0, 0.0)
+        } else {
+            let kern = (sg.x_advance as f64 - advance(sg.gid)) * k * hs;
+            (sg.x_advance as f64 * k * hs, kern)
+        };
         let (dx, dy) = if up {
             (-(sg.y_offset as f64) * k_v, -(sg.x_offset as f64) * k * hs)
         } else {
@@ -1216,6 +1283,7 @@ fn shape_segment(
             ch,
             generated_text,
             adv,
+            kern: if ch == SOFT_HYPHEN { 0.0 } else { kern },
             dx: dx + mark_x,
             dy: dy - mark_y,
             sx: k * hs,
