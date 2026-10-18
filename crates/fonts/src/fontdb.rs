@@ -112,6 +112,9 @@ pub struct FontFace {
     pub typo_ascent: f64,
     /// Descender in font units (positive = down).
     pub descent: f64,
+    /// OS/2 typographic descender in font units (positive = down; the descent when the font has no
+    /// usable one): the part of a line the QuarkXPress composer fits in its frame.
+    pub typo_descent: f64,
     /// Cap height and x height in font units (without plausible OS/2 values, the cap height is the
     /// top of the H, and either is estimated from the ascent): the Cap Height and x Height first
     /// baseline offsets.
@@ -137,6 +140,9 @@ pub struct FontFace {
     kind: std::sync::OnceLock<crate::kind::FaceKind>,
     /// The PostScript name, read on first use.
     postscript: std::sync::OnceLock<Option<String>>,
+    /// The layout features its GSUB and GPOS tables offer, read on first use.
+    features: std::sync::OnceLock<crate::FontFeatures>,
+    quark_em: std::sync::OnceLock<f64>,
 }
 
 /// A cheap `Copy` handle to a face. Faces are never unloaded, so the handle lives for the rest of
@@ -200,6 +206,21 @@ impl FontFace {
             FontBytes::Static(b) => b,
             FontBytes::Owned(v) => v.as_slice(),
         }
+    }
+    /// QuarkXPress's em in font units: the width of two zeros (its default, with Standard Em Space
+    /// off), or the em when the font has no zero. Quark measures tracking and character spacing
+    /// in it.
+    pub fn quark_em(&self) -> f64 {
+        *self.quark_em.get_or_init(|| {
+            let zero = self.glyph_for('0');
+            let w = if zero == 0 { 0.0 } else { self.advance(zero) };
+            if w.is_finite() && w > 0.0 { 2.0 * w } else { self.upem }
+        })
+    }
+    /// Whether the font has a legacy TrueType `kern` table (as opposed to, or besides, OpenType
+    /// GPOS kerning).
+    pub fn has_kern_table(&self) -> bool {
+        self.skrifa().is_some_and(|f| f.table_data(skrifa::Tag::new(b"kern")).is_some())
     }
     pub fn skrifa(&self) -> Option<skrifa::FontRef<'_>> {
         skrifa::FontRef::from_index(self.data(), self.index).ok()
@@ -299,6 +320,11 @@ impl FontFace {
             .map(|a| a as f64)
             .unwrap_or(self.upem * 0.5)
     }
+    /// [`Self::advance`] for many glyphs: the font's metrics are read once.
+    pub fn advances(&self) -> impl Fn(u32) -> f64 + '_ {
+        let metrics = self.skrifa().map(|f| f.glyph_metrics(Size::unscaled(), self.location()));
+        move |gid| metrics.as_ref().and_then(|m| m.advance_width(GlyphId::new(gid))).map_or(self.upem * 0.5, |a| a as f64)
+    }
     /// Vertical advance (down the line) of glyph `gid` in font units: `vmtx`, else one em.
     pub fn v_advance(&self, gid: u32) -> f64 {
         crate::vertical::VMetrics::new(self).advance(GlyphId::new(gid))
@@ -315,6 +341,10 @@ impl FontFace {
     /// height (OS/2, else the `H` glyph's top); else 0.88 em above the baseline.
     pub fn em_box(&self) -> (f64, f64) {
         self.em.get_or_init(|| crate::vertical::em_box(self)).0
+    }
+    /// Whether the font's GSUB or GPOS tables define the layout feature `tag` (such as `smcp`).
+    pub fn has_feature(&self, tag: &str) -> bool {
+        self.features.get_or_init(|| crate::font_features(self)).tags.contains(tag)
     }
     /// [`Self::em_box`] when the font's tables give it, `None` for the 0.88 em fallback.
     pub fn declared_em_box(&self) -> Option<(f64, f64)> {
@@ -926,6 +956,7 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         ascent: m.ascent as f64,
         typo_ascent: typo_ascent(&f, &location, upem).unwrap_or(m.ascent as f64),
         descent: -(m.descent as f64),
+        typo_descent: typo_descent(&f, &location, upem).unwrap_or(-(m.descent as f64)),
         // Fonts with an OS/2 table older than version 2 don't declare these: measure them from
         // flat-topped letters before falling back to a share of the ascent, which can be far off
         // (drop caps are sized from the cap height).
@@ -950,6 +981,8 @@ fn make_face(bytes: FontBytes, source: FontSource, index: u32, family: String, s
         group: std::sync::OnceLock::new(),
         kind: std::sync::OnceLock::new(),
         postscript: std::sync::OnceLock::new(),
+        features: std::sync::OnceLock::new(),
+        quark_em: std::sync::OnceLock::new(),
     })
 }
 
@@ -999,6 +1032,19 @@ fn typo_ascent(f: &skrifa::FontRef<'_>, location: &Location, upem: f64) -> Optio
         v += mvar.metric_delta(skrifa::raw::tables::mvar::tags::HASC, location.coords()).map_or(0.0, |d| d.to_f64());
     }
     plausible(Some(v), upem)
+}
+
+/// The OS/2 typographic descender in font units at `location` (positive = down), if the font has
+/// an OS/2 table and the value is [`plausible`].
+fn typo_descent(f: &skrifa::FontRef<'_>, location: &Location, upem: f64) -> Option<f64> {
+    use skrifa::raw::TableProvider;
+    let mut v = f.os2().ok()?.s_typo_descender() as f64;
+    if !location.coords().is_empty()
+        && let Ok(mvar) = f.mvar()
+    {
+        v += mvar.metric_delta(skrifa::raw::tables::mvar::tags::HDSC, location.coords()).map_or(0.0, |d| d.to_f64());
+    }
+    plausible(Some(-v), upem)
 }
 
 /// `family` without what layout apps add to a family name, if it has any: InDesign's `$ID/`
