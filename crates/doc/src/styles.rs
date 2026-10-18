@@ -802,10 +802,10 @@ impl Styles {
     pub fn resolve_para(&self, p: &ParaFormat) -> (ParaProps, CharProps) {
         let (mut pp, mut cp) = (ParaProps::default(), CharProps::default());
         for s in self.para_chain(&p.style) {
-            pp.apply(&s.para);
+            apply_para(&mut pp, &s.para);
             cp.apply(&s.chars);
         }
-        pp.apply(&p.para);
+        apply_para(&mut pp, &p.para);
         cp.apply(&p.chars);
         (pp, cp)
     }
@@ -849,6 +849,43 @@ impl Styles {
         }
         (2..=usize::MAX).map(|i| format!("{base} {i}")).find(|n| !existing(n)).unwrap_or_else(|| format!("{base} copy"))
     }
+}
+
+/// Overlay `a` on `pp`, except justification settings that aren't numbers (an imported file's
+/// `NaN`): those keep the value beneath, so line spacing is never computed from them.
+fn apply_para(pp: &mut ParaProps, a: &ParaAttrs) {
+    let before = (
+        pp.word_space_min,
+        pp.word_space_desired,
+        pp.word_space_max,
+        pp.letter_space_min,
+        pp.letter_space_desired,
+        pp.letter_space_max,
+        pp.glyph_scale_min,
+        pp.glyph_scale_desired,
+        pp.glyph_scale_max,
+        pp.hyph_weight,
+        pp.hyph_zone,
+        pp.auto_leading,
+    );
+    pp.apply(a);
+    let keep = |v: &mut f64, old: f64| {
+        if !v.is_finite() {
+            *v = old;
+        }
+    };
+    keep(&mut pp.word_space_min, before.0);
+    keep(&mut pp.word_space_desired, before.1);
+    keep(&mut pp.word_space_max, before.2);
+    keep(&mut pp.letter_space_min, before.3);
+    keep(&mut pp.letter_space_desired, before.4);
+    keep(&mut pp.letter_space_max, before.5);
+    keep(&mut pp.glyph_scale_min, before.6);
+    keep(&mut pp.glyph_scale_desired, before.7);
+    keep(&mut pp.glyph_scale_max, before.8);
+    keep(&mut pp.hyph_weight, before.9);
+    keep(&mut pp.hyph_zone, before.10);
+    keep(&mut pp.auto_leading, before.11);
 }
 
 #[cfg(test)]

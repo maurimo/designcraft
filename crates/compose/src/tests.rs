@@ -92,6 +92,32 @@ fn justified_lines_fill_the_measure() {
 }
 
 #[test]
+fn justification_settings_that_are_not_numbers_take_their_defaults() {
+    let nan = Some(f64::NAN);
+    let para = ParaAttrs {
+        align: Some(Align::LeftJustified),
+        word_space_min: nan,
+        word_space_desired: nan,
+        word_space_max: nan,
+        letter_space_min: nan,
+        letter_space_desired: nan,
+        letter_space_max: nan,
+        ..Default::default()
+    };
+    let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 220.0, 2000.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let lines = all_lines(&cs);
+    assert!(lines.len() > 1, "the paragraph breaks into lines");
+    for l in &lines {
+        assert!(l.spacing.is_finite() && l.end_x.is_finite(), "line spacing {} ends at {}", l.spacing, l.end_x);
+        assert!(l.glyphs.iter().all(|g| g.x.is_finite() && g.adv.is_finite()), "glyph positions are numbers");
+    }
+    for l in &lines[..lines.len() - 1] {
+        assert!((l.end_x - l.x1).abs() < 0.6, "justified line ends at {} not {}", l.end_x, l.x1);
+    }
+}
+
+#[test]
 fn small_frame_oversets() {
     let (d, sid, _) = doc_with(LOREM, Rect::new(0.0, 0.0, 200.0, 40.0), ParaAttrs::default());
     let cs = compose_story(&d, sid, &ComposeOptions::default());

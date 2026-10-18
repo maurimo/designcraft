@@ -405,6 +405,18 @@ fn absent_text_attributes_take_indesign_defaults() {
     assert_eq!(omitted.1.font_family, designcraft_doc::CharProps::default().font_family);
 }
 
+/// QuarkXPress writes `NaN` for justification settings it can't map: those are inherited, like
+/// unset ones, and never reach the composer.
+#[test]
+fn nan_justification_settings_are_inherited() {
+    let r = resolve_body(
+        r#"MinimumWordSpacing="85" DesiredWordSpacing="100" MaximumWordSpacing="125" MaximumLetterSpacing="2""#,
+        r#"MinimumWordSpacing="NaN" DesiredWordSpacing="NaN" MaximumWordSpacing="inf" MinimumLetterSpacing="NaN" DesiredLetterSpacing="NaN" MaximumLetterSpacing="NaN""#,
+    );
+    assert_eq!((r.0.word_space_min, r.0.word_space_desired, r.0.word_space_max), (0.85, 1.0, 1.25));
+    assert_eq!((r.0.letter_space_min, r.0.letter_space_desired, r.0.letter_space_max), (0.0, 0.0, 0.02));
+}
+
 /// A tint of -1 is the colour's own tint (100 %): written on a style, it replaces its parent's.
 /// Tints are never negative or above 100 %.
 #[test]
