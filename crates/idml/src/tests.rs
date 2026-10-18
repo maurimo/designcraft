@@ -4247,6 +4247,62 @@ fn cell_first_baseline_comes_from_cell_styles_table_regions_and_cells_and_round_
     assert_eq!(s2.first_baseline, Some(FirstBaseline::CapHeight));
 }
 
+/// A package QuarkXPress wrote (its designmap names it as the creator) is set with the
+/// QuarkXPress composer and Quark's superscript, subscript and small cap sizes; InDesign's keep
+/// their own. A written TextPreference still wins.
+#[test]
+fn quark_created_packages_take_quark_composer_and_type_settings() {
+    let quark = DESIGNMAP.replace(r#"Name="Fixture.indd""#, r#"Name="Fixture.indd" Creator="QuarkXPress (R)""#);
+    let package = |designmap: &str, prefs: &str| {
+        zip_files(&[
+            ("designmap.xml", designmap),
+            ("Resources/Graphic.xml", GRAPHIC),
+            ("Resources/Styles.xml", STYLES),
+            ("Resources/Preferences.xml", prefs),
+            ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+            ("Spreads/Spread_sp1.xml", SPREAD),
+            ("Stories/Story_s1.xml", STORY),
+        ])
+    };
+    let composers = |d: &Document| d.styles.paragraph.iter().map(|s| d.styles.resolve_para_style(&s.name).0.composer).collect::<Vec<_>>();
+    let d = import_idml_with(&package(&quark, PREFS), &|_| None).unwrap();
+    assert_eq!(d.settings.advanced_type, designcraft_doc::AdvancedType::QUARK);
+    assert!(!d.styles.paragraph.is_empty());
+    assert!(composers(&d).iter().all(|c| *c == designcraft_doc::Composer::Quark), "{:?}", composers(&d));
+    let d = import_idml_with(&fixture(), &|_| None).unwrap();
+    assert_eq!(d.settings.advanced_type, designcraft_doc::AdvancedType::default());
+    assert!(composers(&d).iter().all(|c| *c == designcraft_doc::Composer::Paragraph));
+    let prefs = PREFS.replace("</idPkg:Preferences>", r#"<TextPreference SmallCap="80" SuperscriptSize="50"/></idPkg:Preferences>"#);
+    let d = import_idml_with(&package(&quark, &prefs), &|_| None).unwrap();
+    let a = d.settings.advanced_type;
+    assert_eq!((a.small_cap_size, a.superscript_size, a.subscript_size), (80.0, 50.0, 100.0));
+}
+
+/// QuarkXPress writes its flex space as U+2001: a Quark-created package gets the quarter-em space
+/// U+2005 instead, while other packages keep their flush space.
+#[test]
+fn quark_flex_spaces_become_quarter_em_spaces() {
+    let quark = DESIGNMAP.replace(r#"Name="Fixture.indd""#, r#"Name="Fixture.indd" Creator="QuarkXPress (R)""#);
+    let story = STORY.replacen("<Content>", "<Content>a\u{2001}b ", 1);
+    assert!(story.contains('\u{2001}'));
+    let package = |designmap: &str| {
+        zip_files(&[
+            ("designmap.xml", designmap),
+            ("Resources/Graphic.xml", GRAPHIC),
+            ("Resources/Styles.xml", STYLES),
+            ("Resources/Preferences.xml", PREFS),
+            ("MasterSpreads/MasterSpread_m1.xml", MASTER),
+            ("Spreads/Spread_sp1.xml", SPREAD),
+            ("Stories/Story_s1.xml", &story),
+        ])
+    };
+    let text = |d: &Document| d.stories.values().map(|s| s.text.clone()).collect::<String>();
+    let d = import_idml_with(&package(&quark), &|_| None).unwrap();
+    assert!(text(&d).contains("a\u{2005}b") && !text(&d).contains('\u{2001}'), "{:?}", text(&d));
+    let d = import_idml_with(&package(DESIGNMAP), &|_| None).unwrap();
+    assert!(text(&d).contains("a\u{2001}b"));
+}
+
 /// The small cap size round-trips as TextPreference `SmallCap`.
 #[test]
 fn small_cap_size_round_trips() {

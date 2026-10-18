@@ -121,6 +121,14 @@ pub fn import_idml_report_with_previews(
         IdmlError::Invalid(msg) if !warnings.is_empty() => IdmlError::Invalid(format!("{msg} ({})", warnings.join("; "))),
         e => e,
     })?;
+    if quark_created(&root) {
+        adopt_quark_composer(&mut document);
+        for story in document.stories.values_mut() {
+            quark_flex_spaces(Arc::make_mut(story), 0);
+        }
+        warnings
+            .push("created by QuarkXPress: its paragraphs use the QuarkXPress composer and its superscript, subscript and small cap sizes".into());
+    }
     warnings.extend(document.fix_parent_bases());
     document.check().map_err(|e| IdmlError::Invalid(e.to_string()))?;
     Ok(Imported { document, warnings })
@@ -565,7 +573,11 @@ impl<'r> Importer<'r> {
         self.next_id
     }
 
-    fn run(&mut self, _root: &El, top: &[El]) -> Result<()> {
+    fn run(&mut self, root: &El, top: &[El]) -> Result<()> {
+        // QuarkXPress writes no TextPreference: start from its own settings.
+        if quark_created(root) {
+            self.settings.advanced_type = designcraft_doc::AdvancedType::QUARK;
+        }
         // Preferences first (page size, facing pages).
         for e in top {
             match e.local() {
@@ -3449,6 +3461,53 @@ fn ace_char(v: &str) -> Option<char> {
         "7" => Some(st::INDENT_HERE),
         "8" => Some(st::RIGHT_INDENT_TAB),
         _ => None,
+    }
+}
+
+/// Whether QuarkXPress wrote the package (its `designmap.xml` names it as the creator).
+fn quark_created(root: &El) -> bool {
+    root.get("Creator").is_some_and(|c| c.contains("QuarkXPress"))
+}
+
+/// QuarkXPress sets every paragraph with its own composer, whatever composer name it writes: the
+/// root paragraph styles and every non-Japanese composer setting become [`designcraft_doc::Composer::Quark`].
+fn adopt_quark_composer(doc: &mut Document) {
+    use designcraft_doc::Composer as C;
+    let quark = |c: &mut Option<C>, root: bool| match c {
+        Some(C::Paragraph | C::SingleLine) => *c = Some(C::Quark),
+        None if root => *c = Some(C::Quark),
+        _ => {}
+    };
+    let styles = Arc::make_mut(&mut doc.styles);
+    for s in &mut styles.paragraph {
+        let root = s.based_on.is_none();
+        quark(&mut s.para.composer, root);
+    }
+    for story in doc.stories.values_mut() {
+        for p in &mut Arc::make_mut(story).paras {
+            quark(&mut p.para.composer, false);
+        }
+    }
+}
+
+/// QuarkXPress writes its flex space as U+2001, which IDML reads as a flush space. Quark sets it as
+/// a fixed quarter of an em (its default flex space width, 50% of an en space), so it becomes the
+/// four-per-em space U+2005, which has the same UTF-8 length. Footnotes and table cells are
+/// included, nested to a bounded depth.
+fn quark_flex_spaces(story: &mut designcraft_doc::Story, depth: usize) {
+    if depth > 8 {
+        return;
+    }
+    if story.text.contains('\u{2001}') {
+        story.text = story.text.replace('\u{2001}', "\u{2005}");
+    }
+    for note in story.notes.iter_mut().chain(story.endnotes.iter_mut()) {
+        quark_flex_spaces(&mut Arc::make_mut(note).text, depth + 1);
+    }
+    for table in story.tables.values_mut() {
+        for cell in &mut Arc::make_mut(table).cells {
+            quark_flex_spaces(&mut cell.text, depth + 1);
+        }
     }
 }
 
