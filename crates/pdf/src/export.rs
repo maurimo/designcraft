@@ -1483,8 +1483,18 @@ impl Exporter<'_> {
             return;
         }
         let Some(img) = self.load_image(g.asset) else { return };
-        let Some(size) = Size::from_wh(g.size.0.max(1e-3) as f32, g.size.1.max(1e-3) as f32) else { return };
-        s.push_transform(&tf(g.xf));
+        // JPEGs and CMYK TIFFs go in as stored: turn them upright here (decoded images already are).
+        let orientation = self.doc.assets.get(&g.asset).map_or(1, |a| {
+            let passed_through = match image::guess_format(&a.data) {
+                Ok(image::ImageFormat::Jpeg) => true,
+                Ok(image::ImageFormat::Tiff) => !self.rgb_only && designcraft_images::is_cmyk_tiff(&a.data),
+                _ => false,
+            };
+            if passed_through { designcraft_images::exif_orientation(&a.data) } else { 1 }
+        });
+        let (w, h) = if orientation >= 5 { (g.size.1, g.size.0) } else { g.size };
+        let Some(size) = Size::from_wh(w.max(1e-3) as f32, h.max(1e-3) as f32) else { return };
+        s.push_transform(&tf(g.xf * Affine::new(designcraft_images::orientation_affine(orientation, g.size.0, g.size.1))));
         s.draw_image(img, size);
         s.pop();
     }

@@ -227,8 +227,45 @@ pub fn natural_size(bytes: &[u8]) -> Option<(f64, f64)> {
     Some((w as f64, h as f64))
 }
 
-/// Pixel dimensions of a raster.
+/// The EXIF orientation of a raster (1–8; 1 = as stored, also for files without one). Layout
+/// apps show the image turned upright, and size it that way.
+pub fn exif_orientation(bytes: &[u8]) -> u8 {
+    use image::ImageDecoder;
+    if is_psd(bytes) || is_eps(bytes) {
+        return 1;
+    }
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_decoder().ok())
+        .and_then(|mut d| d.orientation().ok())
+        .map_or(1, |o| o.to_exif())
+}
+
+/// The affine (a, b, c, d, e, f: x' = a·x + c·y + e, y' = b·x + d·y + f) that turns a raster drawn
+/// as stored into the box (0, 0, `w`, `h`) upright, for EXIF `orientation`. The stored image is
+/// drawn into (0, 0, `h`, `w`) for orientations 5–8 (a quarter turn), else into the box itself.
+pub fn orientation_affine(orientation: u8, w: f64, h: f64) -> [f64; 6] {
+    match orientation {
+        2 => [-1.0, 0.0, 0.0, 1.0, w, 0.0],
+        3 => [-1.0, 0.0, 0.0, -1.0, w, h],
+        4 => [1.0, 0.0, 0.0, -1.0, 0.0, h],
+        5 => [0.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+        6 => [0.0, 1.0, -1.0, 0.0, w, 0.0],
+        7 => [0.0, -1.0, -1.0, 0.0, w, h],
+        8 => [0.0, -1.0, 1.0, 0.0, 0.0, h],
+        _ => [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+    }
+}
+
+/// Pixel dimensions of a raster, upright (see [`exif_orientation`]).
 pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let (w, h) = stored_pixel_size(bytes)?;
+    Some(if exif_orientation(bytes) >= 5 { (h, w) } else { (w, h) })
+}
+
+/// Pixel dimensions of a raster as stored.
+fn stored_pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if let Some(p) = palette_tiff(bytes) {
         return Some((p.width, p.height));
     }
@@ -249,6 +286,19 @@ pub fn pixel_size(bytes: &[u8]) -> Option<(u32, u32)> {
 /// Straight (non-premultiplied) RGBA8 of a raster in display sRGB: an embedded ICC profile is
 /// applied, and CMYK goes through its own profile or the working CMYK space ([`colour`]).
 pub fn decode_rgba(bytes: &[u8]) -> Option<image::RgbaImage> {
+    let img = decode_rgba_stored(bytes)?;
+    match exif_orientation(bytes) {
+        1 => Some(img),
+        o => {
+            let mut d = image::DynamicImage::ImageRgba8(img);
+            d.apply_orientation(image::metadata::Orientation::from_exif(o)?);
+            Some(d.into_rgba8())
+        }
+    }
+}
+
+/// [`decode_rgba`] as stored, without its EXIF orientation.
+fn decode_rgba_stored(bytes: &[u8]) -> Option<image::RgbaImage> {
     use colour::{DisplayColour, Pixels, to_display_rgba};
     if is_psd(bytes) {
         return psd::decode(bytes);
@@ -802,5 +852,62 @@ mod tests {
         assert_eq!(mime(&bmp), "image/bmp");
         assert_eq!(pixel_size(&bmp), Some((3, 2)));
         assert_eq!(decode_rgba(&bmp).unwrap().get_pixel(1, 1).0, [0, 0, 255, 255]);
+    }
+
+    /// A JPEG of `w`×`h`, left half red and right half blue, with EXIF `orientation`.
+    fn jpeg_with_orientation(w: u32, h: u32, orientation: u16) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, _| if x < w / 2 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) });
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 100).encode_image(&img).unwrap();
+        // APP1 Exif: a little-endian TIFF header and one IFD entry, Orientation (0x0112, SHORT).
+        let mut tiff = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0".to_vec();
+        tiff.extend_from_slice(&orientation.to_le_bytes());
+        tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        let mut app1 = b"Exif\0\0".to_vec();
+        app1.extend_from_slice(&tiff);
+        let len = (app1.len() + 2) as u16;
+        let mut out = jpeg[..2].to_vec();
+        out.extend_from_slice(&[0xFF, 0xE1]);
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(&app1);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    /// A photo with an EXIF orientation is sized and decoded upright, as layout apps show it.
+    #[test]
+    fn exif_orientation_turns_photos_upright() {
+        let plain = jpeg_with_orientation(16, 8, 1);
+        assert_eq!((exif_orientation(&plain), pixel_size(&plain)), (1, Some((16, 8))));
+        // 6: the stored image is turned a quarter clockwise; its left half becomes the top.
+        let turned = jpeg_with_orientation(16, 8, 6);
+        assert_eq!((exif_orientation(&turned), pixel_size(&turned)), (6, Some((8, 16))));
+        let img = decode_rgba(&turned).unwrap();
+        assert_eq!(img.dimensions(), (8, 16));
+        let (top, bottom) = (img.get_pixel(4, 2).0, img.get_pixel(4, 13).0);
+        assert!(top[0] > 200 && top[2] < 60, "{top:?}");
+        assert!(bottom[2] > 200 && bottom[0] < 60, "{bottom:?}");
+    }
+
+    /// `orientation_affine` places a stored image where decoding it upright would.
+    #[test]
+    fn orientation_affine_matches_the_upright_pixels() {
+        let (sw, sh) = (3u32, 2u32);
+        let stored = image::RgbaImage::from_fn(sw, sh, |x, y| image::Rgba([x as u8 * 50, y as u8 * 100, 7, 255]));
+        for o in 1..=8u8 {
+            let mut d = image::DynamicImage::ImageRgba8(stored.clone());
+            d.apply_orientation(image::metadata::Orientation::from_exif(o).unwrap());
+            let upright = d.into_rgba8();
+            let (w, h) = (upright.width() as f64, upright.height() as f64);
+            let [a, b, c, dd, e, f] = orientation_affine(o, w, h);
+            for y in 0..sh {
+                for x in 0..sw {
+                    // Stored pixel centres, drawn into (0, 0, sw, sh), mapped upright.
+                    let (u, v) = (x as f64 + 0.5, y as f64 + 0.5);
+                    let (px, py) = (a * u + c * v + e, b * u + dd * v + f);
+                    assert_eq!(upright.get_pixel(px.floor() as u32, py.floor() as u32), stored.get_pixel(x, y), "orientation {o}");
+                }
+            }
+        }
     }
 }
