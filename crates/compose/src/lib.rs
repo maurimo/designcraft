@@ -1021,7 +1021,12 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
         let sub_objects = sub.objects.clone();
         let drop_end = drop_cap_end(&story.text, prange.clone(), &pp, sub.vertical);
         let mut table = StyleTable { styles: &mut styles_tab, missing: &mut missing_fonts };
-        let env = shape::TypeEnv { auto_leading: pp.auto_leading, adv: doc.settings.advanced_type, glyph_fallback: doc.settings.glyph_fallback };
+        let env = shape::TypeEnv {
+            auto_leading: pp.auto_leading,
+            adv: doc.settings.advanced_type,
+            glyph_fallback: doc.settings.glyph_fallback,
+            quark: pp.composer.quark(),
+        };
         let mut sp = shape::shape_para(
             db,
             &doc.styles,
@@ -1089,7 +1094,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         let ind = pp.left_indent + if j == 0 { pp.first_line_indent } else { 0.0 };
                         tab_advance(&pp.tabs, pp.left_indent, ind + x, gl.get(i + 1..).unwrap_or_default()).0
                     };
-                    breaker::greedy(&gl, &hy, &spacing, &width, &tab)
+                    if pp.composer.quark() {
+                        breaker::quark(&gl, &hy, &spacing, &width, &tab)
+                    } else {
+                        breaker::greedy(&gl, &hy, &spacing, &width, &tab)
+                    }
                 } else if pp.balance_ragged && !spacing.justify {
                     breaker::balanced(&gl, &hy, &spacing, &width)
                 } else {
@@ -1444,7 +1453,11 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                         };
                     tab_advance(&pp.tabs, pp.left_indent, x0 + ind + x - col.x0, rest.get(i + 1..).unwrap_or_default()).0
                 };
-                breaker::greedy(rest, rest_h, &spacing, &width, &tab)
+                if pp.composer.quark() {
+                    breaker::quark(rest, rest_h, &spacing, &width, &tab)
+                } else {
+                    breaker::greedy(rest, rest_h, &spacing, &width, &tab)
+                }
             } else if pp.balance_ragged && !spacing.justify {
                 breaker::balanced(rest, rest_h, &spacing, &width)
             } else {
@@ -1601,6 +1614,14 @@ fn compose_with_db(doc: &Document, story: &Story, frames: &[FrameSpec], opts: &C
                     || line_glyphs.iter().any(|g| sub_objects.get(&g.byte).is_some_and(|o| !o.custom))
                 {
                     desc
+                } else if pp.composer.quark() {
+                    // QuarkXPress fits a line's typographic descender in the frame (an empty
+                    // line's descent).
+                    line_glyphs
+                        .iter()
+                        .map(|g| g.face.typo_descent * g.size / g.face.upem.max(1.0) - (g.shift - g.script_rise).min(0.0))
+                        .reduce(f64::max)
+                        .unwrap_or(desc)
                 } else {
                     0.0
                 };
@@ -2174,6 +2195,7 @@ fn spacing_for(pp: &ParaProps, base_size: f64) -> Spacing {
             "KinsokuPushOutOnly" => 3,
             _ => 0,
         },
+        quark: pp.composer.quark(),
     }
 }
 
@@ -2226,7 +2248,7 @@ fn apply_desired_spacing(glyphs: &mut [Glyph], pp: &ParaProps) {
         if g.is_word_space() {
             g.adv += g.space * (ws - 1.0);
         } else if !g.is_space() && g.adv > 0.0 {
-            g.adv = g.adv * gs + ls * g.space;
+            g.adv = g.adv * gs + ls * breaker::letter_unit(g, pp.composer.quark());
             g.sx *= gs;
             g.dx *= gs;
         }
@@ -2945,7 +2967,7 @@ fn line_metrics(
     let mut own_text = false;
     for g in src {
         let align = reference.map_or(0.0, |r| cjk_alignment_shift(g, r));
-        let shift = g.shift + align;
+        let shift = g.shift - g.script_rise + align;
         let up = shift.max(0.0);
         asc = asc.max(g.ascent + up);
         // A list's bullet or number doesn't raise the Ascent offset: only the line's own text does.
@@ -3246,7 +3268,12 @@ fn layout_line(
         // The letter's kerning was with the next letter, which starts the next line.
         g.adv -= g.kern;
         g.kern = 0.0;
-        let h = shape::hyphen_after(g);
+        let mut h = shape::hyphen_after(g);
+        // QuarkXPress kerns the hyphen against the letter when drawing it, but fits the line
+        // without that kerning.
+        if pp.composer.quark() {
+            h.dx += shape::hyphen_kern(g);
+        }
         line.push(h);
     }
     // Tabs: compute widths left to right.
@@ -3640,9 +3667,9 @@ fn distribute(line: &[Glyph], spaces: &[usize], extra: f64, sp: &Spacing, add: &
             if !is_box(i, g) {
                 0.0
             } else if stretch {
-                g.space * (sp.letter_max - sp.letter_desired).max(0.0)
+                sp.letter_unit(g) * (sp.letter_max - sp.letter_desired).max(0.0)
             } else {
-                g.space * (sp.letter_desired - sp.letter_min).max(0.0)
+                sp.letter_unit(g) * (sp.letter_desired - sp.letter_min).max(0.0)
             }
         })
         .collect();

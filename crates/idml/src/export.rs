@@ -1538,7 +1538,8 @@ impl<'a> Ex<'a> {
                 "Composer",
                 match c {
                     designcraft_doc::Composer::Paragraph => "HL Composer",
-                    designcraft_doc::Composer::SingleLine => "HL Single",
+                    // InDesign has no Quark composer: its single-line composer is the nearest.
+                    designcraft_doc::Composer::SingleLine | designcraft_doc::Composer::Quark => "HL Single",
                     designcraft_doc::Composer::Japanese => "HL Composer J",
                     designcraft_doc::Composer::JapaneseSingleLine => "HL Single J",
                 },

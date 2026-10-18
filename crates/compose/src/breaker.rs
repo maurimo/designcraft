@@ -29,7 +29,7 @@ pub struct Spacing {
     pub word_min: f64,
     pub word_desired: f64,
     pub word_max: f64,
-    /// Letter spacing, as fractions of the space width added between glyphs.
+    /// Letter spacing, as fractions of [`Spacing::letter_unit`] added between glyphs.
     pub letter_min: f64,
     pub letter_desired: f64,
     pub letter_max: f64,
@@ -52,6 +52,8 @@ pub struct Spacing {
     pub korean_char_breaks: bool,
     /// 0: minimum adjustment; 1: push in; 2: push out first; 3: push out only.
     pub kinsoku_priority: u8,
+    /// The QuarkXPress composer: letter spacing is in fractions of Quark's en space (one zero).
+    pub quark: bool,
 }
 
 impl Default for Spacing {
@@ -74,11 +76,17 @@ impl Default for Spacing {
             optical: false,
             korean_char_breaks: false,
             kinsoku_priority: 0,
+            quark: false,
         }
     }
 }
 
 impl Spacing {
+    /// What letter spacing is a fraction of at glyph `g`: its word space (InDesign), or Quark's en
+    /// space, the width of a zero (QuarkXPress's Character spacing).
+    pub fn letter_unit(&self, g: &Glyph) -> f64 {
+        letter_unit(g, self.quark)
+    }
     /// Per-tier (word, letter, glyph) stretch and shrink of glyph `g` as a box.
     fn box_elastic(&self, g: &Glyph) -> ([f64; 3], [f64; 3]) {
         if g.locked_advance {
@@ -96,8 +104,16 @@ impl Spacing {
         }
         let natural = g.adv / self.glyph_desired.max(0.01);
         (
-            [moji_stretch, g.space * (self.letter_max - self.letter_desired).max(0.0), natural * (self.glyph_max - self.glyph_desired).max(0.0)],
-            [moji_shrink, g.space * (self.letter_desired - self.letter_min).max(0.0), natural * (self.glyph_desired - self.glyph_min).max(0.0)],
+            [
+                moji_stretch,
+                self.letter_unit(g) * (self.letter_max - self.letter_desired).max(0.0),
+                natural * (self.glyph_max - self.glyph_desired).max(0.0),
+            ],
+            [
+                moji_shrink,
+                self.letter_unit(g) * (self.letter_desired - self.letter_min).max(0.0),
+                natural * (self.glyph_desired - self.glyph_min).max(0.0),
+            ],
         )
     }
     /// Word-space stretch and shrink of space glyph `g` (see [`Glyph::is_word_space`]); none
@@ -328,6 +344,11 @@ fn right_hang(g: &Glyph, sp: &Spacing) -> f64 {
 
 fn hang_right(g: &Glyph) -> f64 {
     hang(g.ch).1 * g.adv
+}
+
+/// [`Spacing::letter_unit`] for the composer.
+pub fn letter_unit(g: &Glyph, quark: bool) -> f64 {
+    if quark { 0.5 * g.face.quark_em() * g.sx } else { g.space }
 }
 
 /// Advance of the hyphen glyph that would follow `g` (cached per face).
@@ -969,6 +990,253 @@ pub fn greedy(
     }
     // A forced line break as the very last glyph leaves an empty final line (InDesign shows it);
     // a column, frame or page break there ends the paragraph.
+    if let Some(last) = glyphs.last()
+        && last.ch == designcraft_doc::story::FORCED_LINE_BREAK
+    {
+        out.push(Break { start: n, end: n, next: n, hyphen: false, forced: true });
+    }
+    out
+}
+
+/// A break the QuarkXPress composer may choose: where the line ends, its natural width and how
+/// far its word spaces and letter gaps can shrink and stretch.
+struct QuarkOption {
+    end: usize,
+    hyphen: bool,
+    forced: bool,
+    /// Ends at a forced line break character (not the paragraph's end).
+    at_break: bool,
+    width: f64,
+    word: (f64, f64),
+    letter: (f64, f64),
+}
+
+impl QuarkOption {
+    /// The adjustment on Quark's word-first scale: up to ±1 while the word spaces absorb it, then
+    /// 1 + the share of the letter range used (negative when the line shrinks).
+    fn u(&self, w: f64) -> f64 {
+        let need = w - self.width;
+        let ((wc, lc), sign) = if need >= 0.0 { ((self.word.1, self.letter.1), 1.0) } else { ((self.word.0, self.letter.0), -1.0) };
+        let m = need.abs();
+        let v = if m <= wc + 1e-9 {
+            if wc > 1e-9 { m / wc } else { 0.0 }
+        } else if lc > 1e-9 {
+            1.0 + (m - wc) / lc
+        } else {
+            f64::INFINITY
+        };
+        sign * v
+    }
+
+    /// How far the break sets its word spaces from their optimum, in fractions of the word space;
+    /// any break that needs letter spacing costs more than every one that doesn't. A forced break
+    /// (the paragraph's last line) that fits isn't justified, so it costs nothing, and a forced line
+    /// break that fits within [`QUARK_FORCED_SHRINK`] is always taken.
+    fn cost(&self, w: f64, sp: &Spacing) -> f64 {
+        let u = self.u(w);
+        if self.forced && (u >= 0.0 || (self.at_break && u >= -QUARK_FORCED_SHRINK)) {
+            return 0.0;
+        }
+        let m = u.abs();
+        if m <= 1.0 {
+            m * if u > 0.0 { sp.word_max - sp.word_desired } else { sp.word_desired - sp.word_min }.max(0.0)
+        } else {
+            QUARK_LETTER_COST + (m - 1.0)
+        }
+    }
+}
+
+/// Above any cost of word spacing alone (fractions of the word space).
+const QUARK_LETTER_COST: f64 = 1.0e6;
+
+/// A line that ends at a forced line break may shrink a little past full word and letter shrink
+/// (u = -2) rather than leave a fragment of its last word before the break: QuarkXPress sets its
+/// tightest lines at u of about -2.02 to -2.15. Calibrated on one QuarkXPress book.
+const QUARK_FORCED_SHRINK: f64 = 2.25;
+
+/// The QuarkXPress composer's line breaking, fitted black-box to a QuarkXPress PDF (98% of its
+/// line breaks, every one chosen from where Quark's line starts). Line by line:
+/// - a line may end after any whole word up to the last one that fits with every word space and
+///   letter gap at its minimum;
+/// - only the first word that doesn't fit may be hyphenated (where the hyphenated line fits too);
+///   a word that fits whole is never hyphenated;
+/// - of those breaks, the one whose word spaces move least from their optimum wins, measured in
+///   percent of the word space; letter spacing is used only when word spacing can't do it, so a
+///   break that needs it loses to every break that doesn't, and between two that need it the
+///   smaller letter spacing wins. Later breaks win ties.
+///
+/// Unjustified text breaks as in [`greedy`].
+pub fn quark(
+    glyphs: &[Glyph],
+    hyph_after: &[bool],
+    sp: &Spacing,
+    width: &dyn Fn(usize) -> f64,
+    tab: &dyn Fn(usize, f64, usize) -> f64,
+) -> Vec<Break> {
+    if !sp.justify {
+        return greedy(glyphs, hyph_after, sp, width, tab);
+    }
+    let n = glyphs.len();
+    if n == 0 {
+        return vec![Break { start: 0, end: 0, next: 0, hyphen: false, forced: true }];
+    }
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut line = 0;
+    let mut hyphens = 0u32;
+    let mut hy_cache = Vec::new();
+    let may_hyphenate = |hyphens: u32| sp.hyphen_limit == 0 || hyphens < sp.hyphen_limit;
+    while start < n {
+        let w = width(line).max(1.0);
+        let mut x = 0.0;
+        let (mut word, mut letter) = ((0.0, 0.0), (0.0, 0.0));
+        // The letter gap after the last box: not stretched when the line ends there.
+        let mut last_gap = (0.0, 0.0);
+        let mut options: Vec<QuarkOption> = Vec::new();
+        // Whole-word breaks that fit, then the hyphenation points of the first word that doesn't.
+        let mut overflow: Option<usize> = None;
+        // Past full shrink: only a forced line break within QUARK_FORCED_SHRINK may still end it.
+        let mut tight = false;
+        let mut i = start;
+        while i < n {
+            let g = &glyphs[i];
+            if is_forced(g.ch) {
+                options.push(QuarkOption {
+                    end: i + 1,
+                    hyphen: false,
+                    forced: true,
+                    at_break: true,
+                    width: x,
+                    word,
+                    letter: (letter.0 - last_gap.0, letter.1 - last_gap.1),
+                });
+                break;
+            }
+            if g.is_space() && !g.no_break && g.break_after != Some(false) {
+                if i > start {
+                    let o = QuarkOption {
+                        end: i,
+                        hyphen: false,
+                        forced: false,
+                        at_break: false,
+                        width: x,
+                        word,
+                        letter: (letter.0 - last_gap.0, letter.1 - last_gap.1),
+                    };
+                    let u = o.u(w);
+                    if u < -2.0 {
+                        overflow.get_or_insert(i);
+                        if u < -QUARK_FORCED_SHRINK {
+                            break;
+                        }
+                        tight = true;
+                    }
+                    if !tight {
+                        // A whole word fits: the hyphenation points before it are not the
+                        // first overflowing word's.
+                        options.retain(|o| !o.hyphen);
+                        options.push(o);
+                    }
+                }
+                let (st, sh) = sp.space_elastic(g);
+                word = (word.0 + sh, word.1 + st);
+                x += g.adv;
+                i += 1;
+                continue;
+            }
+            let adv = if g.ch == '\t' { tab(line, x, i) } else { g.adv };
+            let (st, sh) = sp.box_elastic(g);
+            last_gap = (sh[1] + sh[2], st[1] + st[2]);
+            letter = (letter.0 + last_gap.0, letter.1 + last_gap.1);
+            x += adv;
+            if i + 1 < n && !glyphs[i + 1].is_space() && !g.no_break && g.break_after != Some(false) {
+                if matches!(g.ch, '-' | '\u{2010}' | '\u{2013}' | '\u{2014}' | '/')
+                    || g.break_after.unwrap_or_else(|| cjk_break(g, &glyphs[i + 1], sp))
+                {
+                    let o = QuarkOption {
+                        end: i + 1,
+                        hyphen: false,
+                        forced: false,
+                        at_break: false,
+                        width: x,
+                        word,
+                        letter: (letter.0 - last_gap.0, letter.1 - last_gap.1),
+                    };
+                    let u = o.u(w);
+                    if u < -2.0 {
+                        overflow.get_or_insert(i);
+                        if u < -QUARK_FORCED_SHRINK {
+                            break;
+                        }
+                        tight = true;
+                    }
+                    if !tight {
+                        options.retain(|o| !o.hyphen);
+                        options.push(o);
+                    }
+                } else if hyph_after[i] && may_hyphenate(hyphens) && !tight {
+                    let o = QuarkOption {
+                        end: i + 1,
+                        hyphen: true,
+                        forced: false,
+                        at_break: false,
+                        width: x - g.kern + hyphen_width(g, &mut hy_cache),
+                        word,
+                        letter,
+                    };
+                    if o.u(w) >= -2.0 {
+                        options.push(o);
+                    }
+                }
+            }
+            if overflow.is_none() && x - word.0 - letter.0 > w + FIT_EPS {
+                overflow = Some(i);
+            }
+            i += 1;
+        }
+        // The rest of the paragraph fits: it may all go on this line.
+        if i >= n && overflow.is_none() && options.last().is_none_or(|o| o.end < n) {
+            options.retain(|o| !o.hyphen);
+            options.push(QuarkOption {
+                end: n,
+                hyphen: false,
+                forced: true,
+                at_break: false,
+                width: x,
+                word,
+                letter: (letter.0 - last_gap.0, letter.1 - last_gap.1),
+            });
+        }
+        let best = options.iter().fold(None::<(&QuarkOption, f64)>, |best, o| {
+            let c = o.cost(w, sp);
+            match best {
+                Some((_, bc)) if c > bc => best,
+                _ => Some((o, c)),
+            }
+        });
+        let (end, hyphen, forced) = match best {
+            Some((o, _)) => (o.end, o.hyphen, o.forced),
+            // Nothing fits: the line ends where the text no longer fits (the rest of the
+            // paragraph when it all does).
+            None => (emergency_split(glyphs, start, overflow.unwrap_or(i).max(start + 1)), false, false),
+        };
+        hyphens = if hyphen { hyphens + 1 } else { 0 };
+        let mut vis_end = end;
+        while vis_end > start && glyphs[vis_end - 1].is_space() {
+            vis_end -= 1;
+        }
+        let mut next = end;
+        while next < n && glyphs[next].is_space() {
+            next += 1;
+        }
+        let next = next.max(start + 1).min(n.max(start + 1));
+        out.push(Break { start, end: vis_end, next: next.min(n), hyphen, forced: forced || end >= n });
+        if next >= n {
+            break;
+        }
+        start = next;
+        line += 1;
+    }
     if let Some(last) = glyphs.last()
         && last.ch == designcraft_doc::story::FORCED_LINE_BREAK
     {

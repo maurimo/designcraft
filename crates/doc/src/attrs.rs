@@ -492,12 +492,20 @@ pub enum Composer {
     Japanese,
     /// The Japanese single-line composer.
     JapaneseSingleLine,
+    /// Line by line, as QuarkXPress composes (observed in its output): advances on a 1/1000 em
+    /// grid, character spacing limits in percent of an en space, and Quark's line-end kerning.
+    Quark,
 }
 
 impl Composer {
     /// Breaks lines greedily, one at a time.
     pub fn single_line(self) -> bool {
-        matches!(self, Composer::SingleLine | Composer::JapaneseSingleLine)
+        matches!(self, Composer::SingleLine | Composer::JapaneseSingleLine | Composer::Quark)
+    }
+
+    /// The QuarkXPress composer, with its glyph metrics and spacing rules.
+    pub fn quark(self) -> bool {
+        self == Composer::Quark
     }
 
     /// A Japanese composer: lines follow the leading model ([`crate::cjk::LeadingModel`]) and

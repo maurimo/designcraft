@@ -37,6 +37,9 @@ pub struct Glyph {
     pub sy: f64,
     /// Baseline shift (positive = up), including super/subscript.
     pub shift: f64,
+    /// The QuarkXPress composer: the super/subscript offset in `shift` (else 0). Quark sets a
+    /// line's ascent, descent and first baseline without it.
+    pub script_rise: f64,
     pub ascent: f64,
     /// The font's typographic ascender at the point size (vertical scale doesn't apply): the Ascent
     /// first baseline offset.
@@ -636,10 +639,12 @@ pub(crate) fn collapse_tcy(glyphs: &mut [Glyph], vertical: bool) {
     }
 }
 
-fn features_for(p: &CharProps) -> Vec<Feature> {
+/// `no_kerning`: the font's pairs are left out (the QuarkXPress composer and a font without a
+/// legacy `kern` table: Quark doesn't apply OpenType kerning).
+fn features_for(p: &CharProps, no_kerning: bool) -> Vec<Feature> {
     let mut v = Vec::new();
     // Optical kerning replaces the font's pairs with measured ones (`crate::optical`).
-    if p.kerning != Kerning::Metrics {
+    if p.kerning != Kerning::Metrics || no_kerning {
         v.extend(feature("-kern"));
     }
     if !p.ligatures || p.tracking.abs() > 1e-9 {
@@ -1150,6 +1155,14 @@ pub struct TypeEnv {
     pub adv: designcraft_doc::AdvancedType,
     /// Characters the font lacks are drawn from fallback fonts (else as its .notdef glyph).
     pub glyph_fallback: bool,
+    /// The QuarkXPress composer: glyph advances on its 1/1000 em grid ([`quark_units`]).
+    pub quark: bool,
+}
+
+/// An advance in font units on QuarkXPress's grid of 1/1000 em (it rounds each glyph's width, not
+/// its kerning).
+pub(crate) fn quark_units(units: f64, upem: f64) -> f64 {
+    if upem > 0.0 { (units * 1000.0 / upem).round() * upem / 1000.0 } else { units }
 }
 
 /// Synthesised super/subscript: size and shift from Advanced Type (percent of the font size).
@@ -1178,6 +1191,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         sx: k * p.h_scale,
         sy: k * p.v_scale,
         shift,
+        script_rise: if auto_leading.quark { shift - p.baseline_shift } else { 0.0 },
         ascent,
         typo_ascent: face.typo_ascent * k,
         descent,
@@ -1253,11 +1267,13 @@ fn shape_segment(
     let vertical = mode.vertical;
     let (size, k, ascent, descent, leading, cap, xh, shift) = metrics(face, p, auto_leading);
     let hs = p.h_scale;
-    let tracking = p.tracking / 1000.0 * p.size;
-    let manual = if let Kerning::Manual(v) = p.kerning { v / 1000.0 * p.size } else { 0.0 };
+    // The QuarkXPress composer measures tracking and kerning in Quark's em (two zeros).
+    let em = if auto_leading.quark && face.upem > 0.0 { p.size * face.quark_em() / face.upem } else { p.size };
+    let tracking = p.tracking / 1000.0 * em;
+    let manual = if let Kerning::Manual(v) = p.kerning { v / 1000.0 * em } else { 0.0 };
     let src = replacement.unwrap_or(&text[range.clone()]);
     let caps = p.capitalization == Capitalization::AllCaps;
-    let feats = features_for(p);
+    let feats = features_for(p, auto_leading.quark && p.kerning == Kerning::Metrics && !face.has_kern_table());
     // Upright in vertical text, Horizontal Kana takes the vertical kana alternates instead.
     let mut upright_feats = feats.clone();
     if vertical && designcraft_doc::otf::is_on(&p.otf_features, "hkna") {
@@ -1265,7 +1281,8 @@ fn shape_segment(
         upright_feats.extend(feature("vkna"));
     }
     let advance = face.advances();
-    let space = face.advance(face.glyph_for(' ')) * k * hs;
+    let width = |gid: u32| if auto_leading.quark { quark_units(advance(gid), face.upem) } else { advance(gid) };
+    let space = width(face.glyph_for(' ')) * k * hs;
     // The language picks the font's localized forms (`locl`); the text around the run lets
     // letters join across a change of style.
     let lang = designcraft_doc::language_tag(&p.language);
@@ -1314,8 +1331,9 @@ fn shape_segment(
         } else if sg.x_advance == 0 {
             (0.0, 0.0)
         } else {
-            let kern = (sg.x_advance as f64 - advance(sg.gid)) * k * hs;
-            (sg.x_advance as f64 * k * hs, kern)
+            let own = advance(sg.gid);
+            let kern = (sg.x_advance as f64 - own) * k * hs;
+            (width(sg.gid) * k * hs + kern, kern)
         };
         let (dx, dy) = if up {
             (-(sg.y_offset as f64) * k_v, -(sg.x_offset as f64) * k * hs)
@@ -1347,6 +1365,7 @@ fn shape_segment(
             sx: k * hs,
             sy: k * p.v_scale,
             shift,
+            script_rise: if auto_leading.quark { shift - p.baseline_shift } else { 0.0 },
             ascent,
             typo_ascent: face.typo_ascent * k,
             descent,
@@ -1488,6 +1507,17 @@ fn fit_auto_tcy(glyphs: &mut [Glyph], auto: &[std::ops::Range<usize>]) {
                 }
             }
         }
+    }
+}
+
+/// The font's kerning between `g` and a hyphen after it, in points.
+pub(crate) fn hyphen_kern(g: &Glyph) -> f64 {
+    let pair: String = [g.rendered_char, '-'].iter().collect();
+    let mut shaped = designcraft_fonts::shape(&g.face, &pair, &[], |c| c);
+    fold_pair_offsets(&g.face, &mut shaped);
+    match shaped.first() {
+        Some(a) if shaped.len() == 2 && a.gid == g.gid => (a.x_advance as f64 - g.face.advance(a.gid)) * g.sx,
+        _ => 0.0,
     }
 }
 

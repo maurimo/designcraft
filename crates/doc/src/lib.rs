@@ -328,6 +328,20 @@ impl Default for AdvancedType {
     }
 }
 
+impl AdvancedType {
+    /// QuarkXPress's settings, observed in its PDF output (the IDML it writes carries none):
+    /// superscripts at 60% raised 33%, subscripts at full size lowered 33%, small caps always
+    /// synthesized at 75% (also in fonts with small-cap glyphs).
+    pub const QUARK: AdvancedType = AdvancedType {
+        superscript_size: 60.0,
+        superscript_position: 33.0,
+        subscript_size: 100.0,
+        subscript_position: 33.0,
+        small_cap_size: 75.0,
+        font_small_caps: false,
+    };
+}
+
 /// File → Document Setup + the guide/grid/unit preferences stored with the document.
 /// Where a document's chapter number comes from (Numbering & Section Options › Document Chapter
 /// Numbering). A book's Update Numbering resolves it in book order.

@@ -1,6 +1,6 @@
 # Typography and composition parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (synthesized small caps; kerning across word spaces; Italian hyphenation; Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (QuarkXPress composer; synthesized small caps; kerning across word spaces; Italian hyphenation; Type › Reload Fonts reads fonts installed, edited or removed since start-up (#328, #547); Optical kerning from outlines (#181); macOS lists fonts that font services and managers activate; Justification dialog for the selected paragraphs; anchored objects wrap text; Tabs panel listed as present (#343); character stroke behind fill) · **Target:** Adobe InDesign 2026 (21.6)
 
 Typesetting is what InDesign is bought for. A feature can exist and still set text differently
 from InDesign: different line breaks, different page count, overset where InDesign fits. This
@@ -34,6 +34,7 @@ Fidelity: **unmeasured** unless stated.
 |---|---|---|---|---|
 | Paragraph Composer | Adobe's multi-line composer | Knuth–Plass total fit, fitness classes, hyphen penalties | ~ | same family of algorithm, Adobe's weights unknown; breaks will differ on some paragraphs |
 | Single-line Composer | greedy | greedy with the same ranges | ✓ | |
+| QuarkXPress composer (DesignCraft only) | — | `Composer::Quark`, chosen on import for IDML that QuarkXPress wrote: its own line choice (whole words before hyphenation, smallest word-space change wins), widths on Quark's 1/1000 em grid, Character spacing in en spaces, the hyphen kerned when drawn but not measured, Quark's superscript/subscript/small cap sizes, superscripts left out of the first baseline, the typographic descender fitted in the frame and centred in table cells, a forced line break kept slightly past full shrink, Quark's flex space (written as U+2001) imported as a quarter-em space, OpenType kerning left out (a legacy `kern` table applies), small caps always synthesized | ~ | line choice fitted black-box to one Quark 2024 book (Gill Sans): 98% of its justified line breaks from Quark's own line starts, 91% of its lines identical end to end (95.6% of its lines on the same page with manual line breaks, 69% also in place), 93.8% of letter pairs within 0.002 pt; a second Quark book (Minion Pro): 90.7% of lines broken as Quark, 87.7% identical end to end without manual breaks; ragged lines and flush zone not modelled |
 | World-Ready composers | Paragraph / Single-line World-Ready | RTL, Arabic and bidi in the main composer | ~ | Indic scripts (Devanagari etc.) shape through harfrust but are untested |
 | Justification | word/letter spacing, glyph scaling min/desired/max, single-word, last line | all of these | ✓ | a justified line with a tab justifies after the tab (#284); set per paragraph in Type › Justification… and the Paragraph panel menu (#531) |
 | Hyphenation | per-language dictionaries (~40), zone, limits, capitalized, last word, across columns | Liang patterns: English (trained from the public-domain Moby list), Spanish (Bezos), Portuguese (hyph-pt), Italian (hyph-it), Norwegian (hyph-no) and Greek (hyph-el-monoton); zone, limits, exceptions in the user dictionary | ~ | other languages don't hyphenate (#87 reported "doesn't work") |
@@ -46,7 +47,7 @@ Fidelity: **unmeasured** unless stated.
 | Variable fonts | axes in Character panel | named instances and free axis values; PDF embeds the instance | ✓ | |
 | Leading | auto (120%), absolute, leading model | ✓ | ✓ | CJK leading models in cjk-typography.md |
 | First baseline | ascent, cap height, x-height, leading, fixed, min | ✓ | ✓ | |
-| Frame fit / overset | baseline of the last line must fit | descenders must fit | ~ | **differs** (#180): frames go overset where InDesign fits |
+| Frame fit / overset | baseline of the last line must fit | the baseline in horizontal frames; the descenders on a path, in vertical text, above reserved footnotes and with inline objects; the typographic descender under the QuarkXPress composer (as Quark) | ~ | lines above footnotes or inline objects may still go to the next frame where InDesign fits them (#180) |
 | Baseline grid | document and frame grids | ✓ | ✓ | |
 | Vertical justification | top, centre, bottom, justify, paragraph spacing limit | ✓ | ✓ | |
 | Text in shaped frames | lines follow oval, polygon and freeform frame outlines, one inset from the outline | ✓ | ~ | concave shapes set one slot per line (the widest); vertical justification and paragraph shading use the frame's rectangle (#646) |

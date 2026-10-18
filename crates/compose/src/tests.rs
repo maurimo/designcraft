@@ -2717,6 +2717,47 @@ fn bottom_baseline_fit_preserves_leading_and_paragraph_spacing() {
     assert_eq!(cs.frames[0].range.end, text.len());
 }
 
+/// The QuarkXPress composer fits a line in its frame only with its typographic descender.
+#[test]
+fn quark_composer_fits_the_typographic_descender_in_the_frame() {
+    let face = designcraft_fonts::FontDb::global().face("Source Serif 4", "Regular");
+    let descender = face.typo_descent * 8.0 / face.upem;
+    assert!(descender > 1.0, "{descender}");
+    let lines = |composer: Composer| {
+        let (mut d, sid, _) = baseline_fit_doc("First\u{2028}Second", 21.0 + descender / 2.0);
+        d.story_mut(sid).unwrap().paras[0].para.composer = Some(composer);
+        compose_story(&d, sid, &ComposeOptions::default()).line_count()
+    };
+    assert_eq!(lines(Composer::Paragraph), 2);
+    assert_eq!(lines(Composer::Quark), 1);
+    let (mut d, sid, _) = baseline_fit_doc("First\u{2028}Second", 21.0 + descender + 0.005);
+    d.story_mut(sid).unwrap().paras[0].para.composer = Some(Composer::Quark);
+    assert_eq!(compose_story(&d, sid, &ComposeOptions::default()).line_count(), 2);
+}
+
+/// A superscript raises the Ascent first baseline offset, except under the QuarkXPress composer.
+#[test]
+fn quark_composer_sets_the_first_baseline_without_superscripts() {
+    let first_baseline = |composer: Composer, superscript: bool| {
+        let text = "Note1 text";
+        let (mut d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 200.0, 100.0), ParaAttrs { composer: Some(composer), ..Default::default() });
+        d.settings.advanced_type.superscript_position = 60.0;
+        let st = d.story_mut(sid).unwrap();
+        st.format_chars(0..text.len(), |f| {
+            f.over.font_family = Some("Source Serif 4".into());
+            f.over.size = Some(10.0);
+        });
+        if superscript {
+            st.format_chars(4..5, |f| f.over.position = Some(designcraft_doc::Position::Superscript));
+        }
+        compose_story(&d, sid, &ComposeOptions::default()).frames[0].lines[0].baseline
+    };
+    let plain = first_baseline(Composer::Paragraph, false);
+    assert!(first_baseline(Composer::Paragraph, true) > plain + 0.5);
+    assert_eq!(first_baseline(Composer::Quark, true), first_baseline(Composer::Quark, false));
+    assert_eq!(first_baseline(Composer::Quark, false), plain);
+}
+
 #[test]
 fn baseline_beyond_bottom_still_oversets_and_threads() {
     let text = "First\u{2028}Second";
@@ -7454,12 +7495,83 @@ fn small_caps_are_synthesized_when_the_fonts_own_are_off() {
     let full = 20.0 / source.upem;
     assert_eq!(g[1].4, source.glyph_for('M'), "a capital M, not the font's small cap: {g:?}");
     assert!((g[1].3 - full * 0.7).abs() < 1e-9 && (g[0].3 - full).abs() < 1e-9, "{g:?}");
+    assert!(!designcraft_doc::AdvancedType::QUARK.font_small_caps && designcraft_doc::AdvancedType::default().font_small_caps);
+}
+
+/// The QuarkXPress composer applies a font's legacy `kern` table but not its OpenType (GPOS)
+/// kerning, which QuarkXPress leaves out.
+#[test]
+fn quark_composer_leaves_out_opentype_kerning() {
+    let db = designcraft_fonts::FontDb::global();
+    let serif = db.face("Source Serif 4", "Regular");
+    assert!(!serif.has_kern_table() && serif.has_feature("kern"));
+    let gap = |composer: Composer, family: &str| {
+        let (mut d, sid, _) = doc_with("AV", Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs { composer: Some(composer), ..Default::default() });
+        let g = set_line(&mut d, sid, family);
+        g[1].1 - g[0].1
+    };
+    let natural = serif.advance(serif.glyph_for('A')) * 20.0 / serif.upem;
+    assert!(gap(Composer::Paragraph, "Source Serif 4") < natural - 0.5, "OpenType kerning applies");
+    assert!((gap(Composer::Quark, "Source Serif 4") - natural).abs() < 0.02, "rounded to 1/1000 em, unkerned");
+    // A font with a legacy `kern` table keeps its pairs.
+    db.add_font(kern_test_font("Kern Table Q1", |g| vec![(g('A'), g('V'), -150)], false));
+    let face = db.face("Kern Table Q1", "Regular");
+    assert!(face.has_kern_table());
+    let width = face.advance(face.glyph_for('A')) * 20.0 / face.upem;
+    assert!((gap(Composer::Quark, "Kern Table Q1") - (width - 150.0 * 20.0 / face.upem)).abs() < 0.02);
+}
+
+/// The QuarkXPress composer sets glyph widths on a grid of 1/1000 em and measures tracking in
+/// Quark's em (two zeros) and letter spacing in its en space (one zero); the other composers use
+/// the font's widths, the em and the word space.
+#[test]
+fn quark_composer_rounds_widths_and_measures_spacing_in_its_em() {
+    let db = designcraft_fonts::FontDb::global();
+    // Source Sans 3 with 2048 units per em: its widths fall off the 1/1000 em grid.
+    let mut font = test_font("Upem 2048 Two", Some(&[]));
+    let tables = u16::from_be_bytes([font[4], font[5]]) as usize;
+    let head = (0..tables).map(|t| 12 + 16 * t).find(|&r| &font[r..r + 4] == b"head").unwrap();
+    let at = u32::from_be_bytes(font[head + 8..head + 12].try_into().unwrap()) as usize;
+    font[at + 18..at + 20].copy_from_slice(&2048u16.to_be_bytes());
+    db.add_font(font);
+    let face = db.face("Upem 2048 Two", "Regular");
+    assert_eq!(face.upem, 2048.0);
+    let units = face.advance(face.glyph_for('a'));
+    let set = |composer: Composer, ls: f64| {
+        let para = ParaAttrs { composer: Some(composer), letter_space_desired: Some(ls), ..Default::default() };
+        let (mut d, sid, _) = doc_with("ab", Rect::new(0.0, 0.0, 400.0, 100.0), para);
+        let g = set_line(&mut d, sid, "Upem 2048 Two");
+        g[1].1 - g[0].1
+    };
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    let exact = units / 2048.0 * 20.0;
+    let rounded = (units * 1000.0 / 2048.0).round() / 1000.0 * 20.0;
+    assert!(exact != rounded);
+    assert!(close(set(Composer::Paragraph, 0.0), exact) && close(set(Composer::SingleLine, 0.0), exact));
+    assert!(close(set(Composer::Quark, 0.0), rounded), "{} vs {rounded}", set(Composer::Quark, 0.0));
+    // 10% letter spacing: of the word space, or of Quark's en space, the width of a zero.
+    let space = face.advance(face.glyph_for(' ')) / 2048.0 * 20.0;
+    let zero = face.advance(face.glyph_for('0')) / 2048.0 * 20.0;
+    assert!((zero - 10.0).abs() > 0.1, "a zero narrower or wider than half an em: {zero}");
+    assert!(close(face.quark_em(), 2.0 * face.advance(face.glyph_for('0'))));
+    assert!(close(set(Composer::Paragraph, 0.1), exact + 0.1 * space));
+    assert!(close(set(Composer::Quark, 0.1), rounded + 0.1 * zero));
+    // Tracking 50 (1/1000 em): of the em, or of Quark's em, two zeros.
+    let tracked = |composer: Composer| {
+        let (mut d, sid, _) = doc_with("ab", Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs { composer: Some(composer), ..Default::default() });
+        d.story_mut(sid).unwrap().format_chars(0..2, |f| f.over.tracking = Some(50.0));
+        let g = set_line(&mut d, sid, "Upem 2048 Two");
+        g[1].1 - g[0].1
+    };
+    assert!(close(tracked(Composer::Paragraph), exact + 0.05 * 20.0));
+    assert!(close(tracked(Composer::Quark), rounded + 0.05 * 2.0 * zero));
 }
 
 /// A line hyphenated after a letter drops the letter's kerning with the next letter, which now
-/// starts the next line.
+/// starts the next line. The QuarkXPress composer also kerns the hyphen against the letter when
+/// drawing it, without counting that kerning in the line's measure.
 #[test]
-fn hyphenated_lines_drop_the_next_letters_kerning() {
+fn hyphenated_lines_drop_the_next_letters_kerning_and_quark_kerns_the_hyphen() {
     let db = designcraft_fonts::FontDb::global();
     db.add_font(kern_test_font("Kern Hyphen 1", |g| vec![(g('n'), g('a'), -60), (g('n'), g('-'), -80)], false));
     let face = db.face("Kern Hyphen 1", "Regular");
@@ -7467,7 +7579,7 @@ fn hyphenated_lines_drop_the_next_letters_kerning() {
     let adv = |s: &str| s.chars().map(|c| face.advance(face.glyph_for(c)) * k).sum::<f64>();
     // Room for "hyphen-" but not "hyphena-": English breaks hy-phen-ation.
     let width = adv("hyphen-") + 1.0;
-    for composer in [Composer::Paragraph, Composer::SingleLine] {
+    for composer in [Composer::SingleLine, Composer::Quark] {
         let para = ParaAttrs { composer: Some(composer), align: Some(Align::Left), ..Default::default() };
         let (mut d, sid, _) = doc_with("hyphenation words", Rect::new(0.0, 0.0, width, 200.0), para);
         let g = set_line(&mut d, sid, "Kern Hyphen 1");
@@ -7479,6 +7591,89 @@ fn hyphenated_lines_drop_the_next_letters_kerning() {
         // The hyphen's pen position (where its advance starts) follows the n's own width.
         let n = g[5];
         assert!((placed.x - placed.dx - n.1 - adv("n")).abs() < 1e-6, "{composer:?}: no kerning with the a of the next line: {g:?}");
-        assert!(placed.dx.abs() < 1e-6, "{composer:?}: hyphen drawn {} after its pen position", placed.dx);
+        let want = if composer == Composer::Quark { -80.0 * k } else { 0.0 };
+        assert!((placed.dx - want).abs() < 1e-6, "{composer:?}: hyphen drawn {} after its pen position", placed.dx);
     }
+}
+
+/// The QuarkXPress composer takes the break whose word spaces move least from their optimum, in
+/// percent of the word space: ten words set with almost no stretch beat eleven squeezed to 90% of
+/// the shrink allowed, which the single-line composer (last break that fits) takes.
+#[test]
+fn quark_composer_prefers_the_smallest_word_space_change() {
+    let text = vec!["i"; 24].join(" ");
+    let close_para =
+        |composer: Composer| ParaAttrs { composer: Some(composer), align: Some(Align::LeftJustified), hyphenate: Some(false), ..Default::default() };
+    // Natural positions, from one ragged line.
+    let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 2000.0, 100.0), ParaAttrs { align: Some(Align::Left), ..Default::default() });
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let g: Vec<_> = cs.frames[0].lines[0].glyphs.iter().filter(|g| g.visible).collect();
+    let space = g.iter().find(|x| x.rendered_char == ' ').unwrap().adv;
+    let words: Vec<_> = g.iter().filter(|x| x.rendered_char != ' ').collect();
+    let end_of_word = |k: usize| words[k].x + words[k].adv - g[0].x;
+    // Eleven words with 90% of their ten spaces' shrink (word spacing 80%–100%–133%).
+    let width = end_of_word(10) - 0.9 * 10.0 * space * 0.2;
+    let words_on_first_line = |composer: Composer| {
+        let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, width, 200.0), close_para(composer));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = &cs.frames[0].lines[0];
+        d.story(sid).unwrap().text[l.range.clone()].split_whitespace().count()
+    };
+    assert_eq!(words_on_first_line(Composer::SingleLine), 11);
+    assert_eq!(words_on_first_line(Composer::Quark), 10);
+}
+
+/// The QuarkXPress composer keeps a forced line break that fits only slightly past full word and
+/// letter shrink, rather than leave the last word alone before the break.
+#[test]
+fn quark_composer_keeps_a_forced_break_just_past_full_shrink() {
+    let text = format!("{}\u{2028}ii ii", ["ii"; 10].join(" "));
+    let para = |composer: Composer, align: Align| ParaAttrs {
+        composer: Some(composer),
+        align: Some(align),
+        hyphenate: Some(false),
+        letter_space_min: Some(-0.1),
+        ..Default::default()
+    };
+    let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, 2000.0, 100.0), para(Composer::Quark, Align::Left));
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let g: Vec<_> = cs.frames[0].lines[0].glyphs.iter().filter(|g| g.visible).collect();
+    let space = g.iter().find(|x| x.rendered_char == ' ').unwrap().adv;
+    let last = g.iter().rfind(|x| x.rendered_char == 'i').unwrap();
+    let natural = last.x + last.adv - g[0].x;
+    // Nine word spaces at 80% of their width, then 110% of the 19 letter gaps' shrink (a tenth of
+    // an en space each).
+    let word = 9.0 * space * 0.2;
+    let letter = 19.0 * 0.1 * 0.5 * 12.0;
+    let words_on_first_line = |width: f64| {
+        let (d, sid, _) = doc_with(&text, Rect::new(0.0, 0.0, width, 200.0), para(Composer::Quark, Align::LeftJustified));
+        let cs = compose_story(&d, sid, &ComposeOptions::default());
+        let l = &cs.frames[0].lines[0];
+        d.story(sid).unwrap().text[l.range.clone()].split_whitespace().count()
+    };
+    assert_eq!(words_on_first_line(natural - word - 1.1 * letter), 10);
+    assert!(words_on_first_line(natural - word - 1.5 * letter) < 10);
+}
+
+/// The QuarkXPress composer never hyphenates a word that fits whole, even when it fits only with
+/// every word space at its minimum.
+#[test]
+fn quark_composer_sets_a_whole_word_before_hyphenating_it() {
+    let text = "it it it it it it it it it it internationalization it it it it it it";
+    // Natural widths as the QuarkXPress composer measures them (no OpenType kerning).
+    let ragged = ParaAttrs { composer: Some(Composer::Quark), align: Some(Align::Left), ..Default::default() };
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, 2000.0, 100.0), ragged);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let g: Vec<_> = cs.frames[0].lines[0].glyphs.iter().filter(|g| g.visible).collect();
+    let space = g.iter().find(|x| x.rendered_char == ' ').unwrap().adv;
+    let word_end = text.find("internationalization").unwrap() + "internationalization".len();
+    let last = g.iter().rfind(|x| x.byte < word_end).unwrap();
+    // The long word fits with 99% of the shrink of the ten spaces before it.
+    let width = last.x + last.adv - g[0].x - 0.99 * 10.0 * space * 0.2;
+    let para = ParaAttrs { composer: Some(Composer::Quark), align: Some(Align::LeftJustified), ..Default::default() };
+    let (d, sid, _) = doc_with(text, Rect::new(0.0, 0.0, width, 200.0), para);
+    let cs = compose_story(&d, sid, &ComposeOptions::default());
+    let l = &cs.frames[0].lines[0];
+    assert!(!l.hyphenated);
+    assert_eq!(d.story(sid).unwrap().text[l.range.clone()].trim_end(), &text[..word_end]);
 }

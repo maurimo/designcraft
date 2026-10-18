@@ -109,14 +109,17 @@ struct CellLayout {
 /// Cell text fits by its baseline, while its typographic/inline-object bounds must still
 /// remain inside the physical cell. The bottom inset can contain ordinary descenders;
 /// adding both the inset and the full descent unnecessarily grows every row.
+/// Under the QuarkXPress composer the text ends at its typographic descender, which the inset
+/// doesn't hold: Quark centres and fits a cell's text from its first line's top to that point.
 struct CellLineExtent {
     baseline: f64,
     bottom: f64,
+    quark: bool,
 }
 
 impl CellLineExtent {
     fn fit_height(&self, bottom_inset: f64) -> f64 {
-        self.baseline.max(self.bottom - bottom_inset)
+        if self.quark { self.bottom } else { self.baseline.max(self.bottom - bottom_inset) }
     }
 }
 
@@ -141,7 +144,19 @@ fn compose_cell(doc: &Document, cell: &Cell, w: f64, opts: &ComposeOptions, left
         .frames
         .first()
         .map(|f| {
-            let mut extents: Vec<_> = f.lines.iter().map(|l| CellLineExtent { baseline: l.baseline, bottom: l.baseline + l.descent }).collect();
+            let quark = |l: &crate::Line| cell.text.paras.get(l.para).is_some_and(|p| doc.styles.resolve_para(p).0.composer.quark());
+            let mut extents: Vec<_> = f
+                .lines
+                .iter()
+                .map(|l| {
+                    if quark(l) {
+                        let typo = l.glyphs.iter().map(|g| g.face.typo_descent * g.sy).reduce(f64::max).unwrap_or(l.descent);
+                        CellLineExtent { baseline: l.baseline, bottom: l.baseline + typo, quark: true }
+                    } else {
+                        CellLineExtent { baseline: l.baseline, bottom: l.baseline + l.descent, quark: false }
+                    }
+                })
+                .collect();
             // Line metrics include baseline shifts and super/subscript. Include the final
             // geometry of in-flow objects too, but leave custom anchors out of text flow.
             for object in &f.objects {
@@ -1020,6 +1035,30 @@ mod height_tests {
                 assert!(!placed.overset);
             }
         }
+    }
+
+    /// Under the QuarkXPress composer a centred cell's text runs from the top of its first line to
+    /// its typographic descender, which the bottom inset doesn't hold.
+    #[test]
+    fn quark_cells_centre_their_text_down_to_the_typographic_descender() {
+        let face = designcraft_fonts::FontDb::global().face("Source Sans 3", "Regular");
+        let descender = face.typo_descent * 11.0 / face.upem;
+        let centred = |composer: designcraft_doc::Composer| {
+            let mut cell = text_cell("gyp", 1.5);
+            cell.text.paras[0].para.composer = Some(composer);
+            cell.vj = VerticalJustification::Center;
+            let mut table = single_table(cell);
+            table.rows[0].mode = RowHeightMode::Exactly;
+            table.rows[0].height = 60.0;
+            let composed = compose_table(table, 200.0);
+            let placed = composed.frames[0].tables[0].cell(0, 0).unwrap();
+            let line = &placed.text.frames[0].lines[0];
+            (placed.origin.y + line.baseline, placed.clip, line.baseline)
+        };
+        let (quark, clip, first) = centred(designcraft_doc::Composer::Quark);
+        assert!((quark - (clip.y0 + (clip.height() - first - descender) / 2.0 + first)).abs() < 1e-6, "{quark} in {clip:?}");
+        let (paragraph, ..) = centred(designcraft_doc::Composer::Paragraph);
+        assert!(paragraph > quark + 0.1, "the paragraph composer lets the inset hold the descender: {paragraph} vs {quark}");
     }
 
     #[test]
