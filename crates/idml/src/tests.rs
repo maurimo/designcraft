@@ -1922,6 +1922,32 @@ fn own_nested_styles_clear_an_inherited_drop_cap_style_in_cells_and_notes() {
     assert_eq!(cell.paras[0].para.drop_cap_style.as_deref(), Some(st::NO_CHAR_STYLE), "{:?}", cell.text);
 }
 
+/// A graphic cell (QuarkXPress writes no Graphic…Inset) holds its image as the cell's graphic, not
+/// as an inline object on a text line, centred as its frame sat in the cell.
+#[test]
+fn graphic_cells_import_their_image() {
+    let cell = r#"<Rectangle Self="u0" ContentType="GraphicType" ItemTransform="1 0 0 1 0 0"><Properties><PathGeometry><GeometryPathType PathOpen="false"><PathPointArray>
+<PathPointType Anchor="0 0" LeftDirection="0 0" RightDirection="0 0"/><PathPointType Anchor="0 22" LeftDirection="0 22" RightDirection="0 22"/>
+<PathPointType Anchor="58 22" LeftDirection="58 22" RightDirection="58 22"/><PathPointType Anchor="58 0" LeftDirection="58 0" RightDirection="58 0"/>
+</PathPointArray></GeometryPathType></PathGeometry></Properties>
+<Image ItemTransform="0.5 0 0 0.5 -5 -3"><Properties><GraphicBounds Left="0" Top="0" Right="200" Bottom="100"/></Properties>
+<Link LinkResourceURI="file:/definitely/missing%20dir/photo.png"/></Image></Rectangle>"#;
+    let paras = format!(
+        r#"<ParagraphStyleRange AppliedParagraphStyle="ParagraphStyle/$ID/NormalParagraphStyle"><CharacterStyleRange AppliedCharacterStyle="CharacterStyle/$ID/[No character style]">
+<Table HeaderRowCount="0" FooterRowCount="0"><Row Name="0" SingleRowHeight="24" MinimumHeight="24"/><Column Name="0" SingleColumnWidth="60"/><Cell Name="0:0" CellType="GraphicTypeCell">{cell}</Cell></Table>
+</CharacterStyleRange></ParagraphStyleRange>"#
+    );
+    let d = import_idml_with(&drop_cap_fixture("", &paras), &|_| None).unwrap();
+    let table = d.stories.values().find_map(|s| s.tables.values().next()).expect("a table");
+    let cell = table.cell(0, 0).unwrap();
+    let g = cell.graphic.as_ref().expect("the cell's graphic");
+    assert_eq!(g.size, (200.0, 100.0));
+    // The image's own placement in its frame (half size, moved up and left).
+    assert_eq!(g.xf.as_coeffs(), [0.5, 0.0, 0.0, 0.5, -5.0, -3.0]);
+    assert_eq!(cell.insets, [1.0; 4], "the 58×22 frame centred in the 60×24 cell");
+    assert!(cell.text.text.is_empty() && cell.text.objects.is_empty(), "{:?}", cell.text.text);
+}
+
 /// A paragraph that clears its style's drop cap style without nested styles of its own round-trips:
 /// it is written with the style's list, the Dropcap entry set to [None].
 #[test]

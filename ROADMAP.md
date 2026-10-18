@@ -348,6 +348,7 @@ list) · [roadmap.md](docs/roadmap.md) (milestones, plan) · [parity-checklist.m
 
 Newest first.
 
+- **2026-10-18** · IDML graphic cells (`CellType="GraphicTypeCell"`) import as graphic cells, centred as their frame sat in the cell, instead of an image on a 12 pt text line that grew the row. No readiness percentage change.
 - **2026-10-18** · Placed photos with an EXIF orientation are sized, shown and exported upright (they were drawn as stored, squeezed into their upright frame). No readiness percentage change.
 - **2026-10-18** · IDML that QuarkXPress wrote (`designmap.xml` Creator) is set with the QuarkXPress composer and Quark's superscript, subscript and small cap settings, and its flex space (written as U+2001) becomes a fixed quarter-em space. No readiness percentage change.
 - **2026-10-18** · New `Composer::Quark`, measured black-box on two QuarkXPress books (IDML + their PDFs): Quark's own line choice (whole words before hyphenation, the smallest word-space change wins), widths on its 1/1000 em grid, tracking and Character spacing in its em (two zeros of the font), the hyphen kerned when drawn but not measured, OpenType kerning left out (a legacy `kern` table applies), a line fits its frame with its typographic descender, superscripts don't lower the first baseline, cell text centred down to the typographic descender, and a forced line break kept slightly past full shrink. No readiness percentage change.

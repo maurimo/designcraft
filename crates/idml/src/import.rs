@@ -2223,7 +2223,7 @@ impl<'r> Importer<'r> {
             }
             cell.style = if cell_style == designcraft_doc::NO_CELL_STYLE { String::new() } else { cell_style };
             let default_para = cell.text.paras.first().cloned().unwrap_or_default();
-            cell.text = self.story_with_para(StoryId(0), ce, default_para);
+            cell.text = self.story_with_para(StoryId(0), ce, default_para.clone());
             if let Some(fc) = ce.get("FillColor") {
                 cell.fill = self.swatch_ref(fc);
             }
@@ -2245,6 +2245,19 @@ impl<'r> Importer<'r> {
                 cell.first_baseline_min = min.clamp(0.0, 8640.0);
             }
             cell.rotation = ce.num("RotationAngle").unwrap_or(cell.rotation);
+            let size = (
+                t.columns.get(c..c + cs).map_or(0.0, |cols| cols.iter().map(|k| k.width).sum()),
+                t.rows.get(r..r + rs).map_or(0.0, |rows| rows.iter().map(|k| k.height).sum()),
+            );
+            if let Some((graphic, insets)) = self.graphic_cell(ce, size) {
+                cell.graphic = Some(graphic);
+                cell.insets = insets;
+                let mut text = designcraft_doc::Story::new(StoryId(0));
+                if let Some(p) = text.paras.first_mut() {
+                    *p = default_para;
+                }
+                cell.text = text;
+            }
             for (i, side) in ["TopEdge", "LeftEdge", "BottomEdge", "RightEdge"].iter().enumerate() {
                 let attrs = self.cell_stroke_attrs(ce, side);
                 attrs.apply_to(&mut cell.strokes[i]);
@@ -3037,6 +3050,28 @@ impl<'r> Importer<'r> {
             return Fill::none();
         }
         Fill { swatch, tint, ..Fill::none() }
+    }
+
+    /// A graphic cell (`CellType="GraphicTypeCell"`): the image in its frame, mapped into the cell's
+    /// content box, and the cell's insets. The `Graphic…Inset` attributes give them; without them
+    /// (QuarkXPress writes none) the frame sits centred in the cell of `size`.
+    fn graphic_cell(&mut self, ce: &El, size: (f64, f64)) -> Option<(designcraft_doc::Graphic, [f64; 4])> {
+        let frame = ce.elements().find(|e| matches!(e.local(), "Rectangle" | "Oval" | "Polygon"))?;
+        let img = frame.elements().find(|c| matches!(c.local(), "Image" | "PDF" | "EPS" | "ImportedPage" | "WMF" | "PICT" | "SVG"))?;
+        let Content::Graphic(mut gr) = self.graphic(img) else { return None };
+        gr.fill = self.image_fill(img);
+        let fxf = parse_affine(frame.get("ItemTransform"));
+        let bounds = frame.prop_el("PathGeometry").map(path_of).and_then(|p| p.bounds()).map(|b| fxf.transform_rect_bbox(b));
+        let (x0, y0, w, h) = bounds.map_or((0.0, 0.0, size.0, size.1), |b| (b.x0, b.y0, b.width(), b.height()));
+        gr.xf = Affine::translate((-x0, -y0)) * fxf * gr.xf;
+        let (ix, iy) = (((size.0 - w) / 2.0).max(0.0), ((size.1 - h) / 2.0).max(0.0));
+        let mut insets = [iy, ix, iy, ix];
+        for (i, k) in ["GraphicTopInset", "GraphicLeftInset", "GraphicBottomInset", "GraphicRightInset"].iter().enumerate() {
+            if let Some(v) = ce.num(k).filter(|v| v.is_finite()) {
+                insets[i] = v.max(0.0);
+            }
+        }
+        Some((gr, insets))
     }
 
     fn graphic(&mut self, g: &El) -> Content {
