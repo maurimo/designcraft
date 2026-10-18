@@ -112,6 +112,19 @@ fn is_word_char(c: char) -> bool {
     c.is_alphabetic() || is_apostrophe(c)
 }
 
+/// Where an Italian elided word (`dell`, `anch`, `sant`) may break before its apostrophe: before
+/// its last consonant (`ch` and `gh` stay together), when a vowel comes before that.
+fn italian_elision_break(part: &[char]) -> Option<usize> {
+    let vowel = |c: char| "aeiouàèéìíòóùú".contains(c);
+    let n = part.len();
+    let last = *part.last()?;
+    if vowel(last) || !last.is_alphabetic() {
+        return None;
+    }
+    let p = if last == 'h' && n >= 2 && matches!(part[n - 2], 'c' | 'g') { n - 2 } else { n - 1 };
+    part[..p].iter().any(|&c| vowel(c)).then_some(p)
+}
+
 /// Unrestricted break points of one lowercase core (letters and `'` only, no leading/trailing `'`).
 fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
     let n = core.len();
@@ -119,17 +132,31 @@ fn core_breaks(core: &[char], lang: Lang) -> (Vec<usize>, Source) {
         return (vec![], Source::None);
     }
     if let Lang::Patterns(l) = lang {
-        if core.contains(&'\'') {
-            return (vec![], Source::None);
-        }
-        let s: String = core.iter().collect();
+        // Each part between apostrophes is a word of its own: an elision (Italian `dell’impianto`,
+        // French `l’ensemble`) hyphenates in the word after it.
         let mut out = Vec::new();
-        let mut at = 0;
-        let syl: Vec<&str> = hypher::hyphenate_bounded(&s, l, 1, 1).collect();
-        for part in &syl[..syl.len().saturating_sub(1)] {
-            at += part.chars().count();
-            out.push(at);
+        let mut start = 0;
+        let parts: Vec<&[char]> = core.split(|c| *c == '\'').collect();
+        for (k, part) in parts.iter().enumerate() {
+            let s: String = part.iter().collect();
+            let mut at = start;
+            let syl: Vec<&str> = hypher::hyphenate_bounded(&s, l, 1, 1).collect();
+            for p in &syl[..syl.len().saturating_sub(1)] {
+                at += p.chars().count();
+                out.push(at);
+            }
+            // Italian divides an elision before the consonant ahead of its apostrophe, which goes
+            // to the next line with the word it joins: del-l’area, an-ch’essi, San-t’Andrea.
+            if l == hypher::Lang::Italian
+                && k + 1 < parts.len()
+                && let Some(p) = italian_elision_break(part)
+            {
+                out.push(start + p);
+            }
+            start += part.len() + 1;
         }
+        out.sort_unstable();
+        out.dedup();
         return (out, Source::Patterns);
     }
     let dict = Dictionary::en_us();
@@ -394,6 +421,37 @@ mod tests {
         assert_eq!(h("teatro"), "tea-tro", "a vowel run stays whole");
         assert_eq!(h("calle"), "ca-lle", "ll stays whole");
         assert!(Lang::for_language("French").is_none(), "only languages built in");
+    }
+
+    #[test]
+    fn italian_uses_the_hyph_it_patterns() {
+        let it = Lang::for_language("Italian").unwrap();
+        assert_eq!(it, Lang::for_language("it_IT").unwrap());
+        assert_ne!(it, Lang::for_language("Spanish").unwrap());
+        let h = |w: &str| {
+            let pts = hyphen_points_in(w, &Limits::default(), it);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        // Breaks QuarkXPress made in an Italian book, among the patterns' others.
+        assert_eq!(h("geologica"), "geo-lo-gi-ca");
+        assert_eq!(h("considerando"), "con-si-de-ran-do");
+        assert_eq!(h("sostanzialmente"), "so-stan-zial-men-te", "s+consonant starts a syllable");
+        assert_eq!(h("cantiere"), "can-tie-re");
+        assert_eq!(h("differenti"), "dif-fe-ren-ti");
+        // An elision hyphenates in the word after its apostrophe, and before the consonant ahead of
+        // the apostrophe, never next to it; the limits count the whole word (the book's: three
+        // letters before a break).
+        let lim = Limits { after_first: 3, ..Limits::default() };
+        let h3 = |w: &str| {
+            let pts = hyphen_points_in(w, &lim, it);
+            w.chars().enumerate().map(|(i, c)| if pts.contains(&i) { format!("-{c}") } else { c.to_string() }).collect::<String>()
+        };
+        assert_eq!(h3("dell’impianto"), "del-l’im-pian-to");
+        assert_eq!(h3("l’analisi"), "l’ana-li-si");
+        assert_eq!(h("anch’essi"), "an-ch’es-si");
+        assert_eq!(h("Sant’Andrea"), "San-t’An-drea");
+        assert_eq!(h("senz’altro"), "sen-z’al-tro");
+        assert_eq!(h("all’area"), "al-l’a-rea");
     }
 
     #[test]
