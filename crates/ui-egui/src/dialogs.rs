@@ -1752,7 +1752,14 @@ fn preferences(app: &crate::DesignApp, ui: &mut egui::Ui, d: &mut Dialog, max_he
                             }
                             ui.end_row();
                         }
+                        crate::rtl::label(ui, crate::i18n::tr(&app.ui.language, "Small Cap:"));
+                        ui.horizontal(|ui| {
+                            text_field(ui, d, "adv.smallCapSize", 50.0);
+                            ui.label("%");
+                        });
+                        ui.end_row();
                     });
+                    check(ui, d, "adv.fontSmallCaps", crate::i18n::tr(&app.ui.language, "Use the Font's Small Caps"));
                 }
                 "black" => {
                     ui.label(crate::rtl::widget(
@@ -3431,10 +3438,13 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
                 doc["kerningIncrement"] = json!(v.clamp(1.0, 1000.0));
             }
             let mut adv = json!({});
-            for k in ["superscriptSize", "superscriptPosition", "subscriptSize", "subscriptPosition"] {
+            for k in ["superscriptSize", "superscriptPosition", "subscriptSize", "subscriptPosition", "smallCapSize"] {
                 if let Some(v) = d.n(&format!("adv.{k}")) {
                     adv[k] = json!(if k.ends_with("Size") { v.clamp(1.0, 200.0) } else { v.clamp(-500.0, 500.0) });
                 }
+            }
+            if d.fields.contains_key("adv.fontSmallCaps") {
+                adv["fontSmallCaps"] = json!(d.b("adv.fontSmallCaps"));
             }
             doc["advancedType"] = adv;
             doc["overprintBlack"] = json!(d.b("overprintBlack"));

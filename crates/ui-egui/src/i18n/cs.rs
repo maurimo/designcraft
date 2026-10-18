@@ -1732,6 +1732,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Straight Double Quotation Marks", "Rovné dvojité uvozovky"),
     ("Straight Single Quotation Mark (Apostrophe)", "Rovná jednoduchá uvozovka (apostrof)"),
     ("Subscript:", "Dolní index:"),
+    ("Small Cap:", "Kapitálky:"),
+    ("Use the Font's Small Caps", "Použít kapitálky písma"),
     ("Superscript:", "Horní index:"),
     ("Tab", "Tabulátor"),
     ("Thin Space", "Úzká mezera"),

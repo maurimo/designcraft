@@ -7409,6 +7409,53 @@ fn kerning_applies_across_word_spaces_and_sits_on_the_first_glyph() {
     assert!(close(at('b').1 - at('.').1, adv('.') - 100.0 * k + adv(' ')), "{g:?}");
 }
 
+/// Small caps in a font without `smcp` are synthesized: lowercase letters are set as capitals at
+/// the Advanced Type small cap size; capitals and other characters keep the full size. A font
+/// with `smcp` keeps its own small capitals.
+#[test]
+fn small_caps_are_synthesized_when_the_font_has_none() {
+    use designcraft_doc::Capitalization;
+    let db = designcraft_fonts::FontDb::global();
+    db.add_font(kern_test_font("No Smcp Sans1", |_| vec![], true));
+    let face = db.face("No Smcp Sans1", "Regular");
+    assert!(!face.has_feature("smcp") && db.face("Source Sans 3", "Regular").has_feature("smcp"));
+    let set = |family: &str, small_cap_size: Option<f64>| {
+        let (mut d, sid, _) = doc_with("Sm 1", Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs::default());
+        if let Some(s) = small_cap_size {
+            d.settings.advanced_type.small_cap_size = s;
+        }
+        d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.capitalization = Some(Capitalization::SmallCaps));
+        set_line(&mut d, sid, family)
+    };
+    let full = 20.0 / face.upem;
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    for (size, scale) in [(None, 0.7), (Some(75.0), 0.75)] {
+        let g = set("No Smcp Sans1", size);
+        assert_eq!((g[0].4, g[1].4), (face.glyph_for('S'), face.glyph_for('M')), "{g:?}");
+        assert!(close(g[0].3, full) && close(g[1].3, full * scale) && close(g[2].3, full), "{g:?}");
+    }
+    let source = db.face("Source Sans 3", "Regular");
+    let g = set("Source Sans 3", None);
+    assert_ne!(g[1].4, source.glyph_for('M'), "the font's own small cap");
+    assert!(close(g[1].3, 20.0 / source.upem));
+}
+
+/// With Advanced Type's "use the font's small caps" off (as QuarkXPress sets them), small caps are
+/// capitals at the small cap size even in a font that has small-cap glyphs.
+#[test]
+fn small_caps_are_synthesized_when_the_fonts_own_are_off() {
+    use designcraft_doc::Capitalization;
+    let source = designcraft_fonts::FontDb::global().face("Source Sans 3", "Regular");
+    assert!(source.has_feature("smcp"));
+    let (mut d, sid, _) = doc_with("Sm 1", Rect::new(0.0, 0.0, 400.0, 100.0), ParaAttrs::default());
+    d.settings.advanced_type.font_small_caps = false;
+    d.story_mut(sid).unwrap().format_chars(0..4, |f| f.over.capitalization = Some(Capitalization::SmallCaps));
+    let g = set_line(&mut d, sid, "Source Sans 3");
+    let full = 20.0 / source.upem;
+    assert_eq!(g[1].4, source.glyph_for('M'), "a capital M, not the font's small cap: {g:?}");
+    assert!((g[1].3 - full * 0.7).abs() < 1e-9 && (g[0].3 - full).abs() < 1e-9, "{g:?}");
+}
+
 /// A line hyphenated after a letter drops the letter's kerning with the next letter, which now
 /// starts the next line.
 #[test]

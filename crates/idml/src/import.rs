@@ -582,6 +582,7 @@ impl<'r> Importer<'r> {
                         ("SuperscriptPosition", &mut a.superscript_position),
                         ("SubscriptSize", &mut a.subscript_size),
                         ("SubscriptPosition", &mut a.subscript_position),
+                        ("SmallCap", &mut a.small_cap_size),
                     ] {
                         if let Some(x) = e.num(k) {
                             *v = x;

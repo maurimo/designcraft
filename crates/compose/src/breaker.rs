@@ -342,7 +342,8 @@ fn hyphen_width(g: &Glyph, cache: &mut Vec<(u32, f64)>) -> f64 {
             u
         }
     };
-    units * g.sx
+    // After a small cap, the hyphen has the text's full size.
+    units * g.sx / if g.small_cap > 0.0 { g.small_cap } else { 1.0 }
 }
 
 /// Push a break inside a word. Ragged text gets the line-end stretch around it

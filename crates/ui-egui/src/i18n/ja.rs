@@ -1966,6 +1966,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Straight Double Quotation Marks", "直線型二重引用符"),
     ("Straight Single Quotation Mark (Apostrophe)", "直線型一重引用符 (アポストロフィー)"),
     ("Subscript:", "下付き:"),
+    ("Small Cap:", "スモールキャップ:"),
+    ("Use the Font's Small Caps", "フォントのスモールキャップを使用"),
     ("Superscript:", "上付き:"),
     ("Tab", "タブ"),
     ("Thin Space", "細いスペース"),

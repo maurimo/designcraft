@@ -1779,6 +1779,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Straight Double Quotation Marks", "სწორი ორმაგი ბრჭყალები"),
     ("Straight Single Quotation Mark (Apostrophe)", "სწორი ერთმაგი ბრჭყალი (აპოსტროფი)"),
     ("Subscript:", "ქვედა ინდექსი:"),
+    ("Small Cap:", "პატარა მთავრული:"),
+    ("Use the Font's Small Caps", "შრიფტის პატარა მთავრულის გამოყენება"),
     ("Superscript:", "ზედა ინდექსი:"),
     ("Tab", "ტაბულაცია"),
     ("Thin Space", "ვიწრო შორისი"),

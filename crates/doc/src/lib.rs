@@ -308,11 +308,23 @@ pub struct AdvancedType {
     pub superscript_position: f64,
     pub subscript_size: f64,
     pub subscript_position: f64,
+    /// Small caps drawn from a font without small-cap glyphs: the capitals' size, in percent.
+    pub small_cap_size: f64,
+    /// Small caps use the font's own small-cap glyphs (OpenType `smcp`) when it has them; off,
+    /// they are always capitals at [`Self::small_cap_size`], as QuarkXPress sets them.
+    pub font_small_caps: bool,
 }
 
 impl Default for AdvancedType {
     fn default() -> Self {
-        AdvancedType { superscript_size: 58.3, superscript_position: 33.3, subscript_size: 58.3, subscript_position: 33.3 }
+        AdvancedType {
+            superscript_size: 58.3,
+            superscript_position: 33.3,
+            subscript_size: 58.3,
+            subscript_position: 33.3,
+            small_cap_size: 70.0,
+            font_small_caps: true,
+        }
     }
 }
 

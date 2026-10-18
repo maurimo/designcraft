@@ -186,7 +186,17 @@ impl Cache {
         }
         // Advanced Type sizes super/subscripts.
         let a = doc.settings.advanced_type;
-        sig.extend([a.superscript_size, a.superscript_position, a.subscript_size, a.subscript_position].map(|v| v.to_bits() as usize));
+        sig.extend(
+            [
+                a.superscript_size,
+                a.superscript_position,
+                a.subscript_size,
+                a.subscript_position,
+                a.small_cap_size,
+                f64::from(u8::from(a.font_small_caps)),
+            ]
+            .map(|v| v.to_bits() as usize),
+        );
         // Missing glyphs: fallback fonts or the font's box.
         sig.push(usize::from(doc.settings.glyph_fallback));
         // Named lists continue from earlier stories.

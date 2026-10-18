@@ -4246,3 +4246,13 @@ fn cell_first_baseline_comes_from_cell_styles_table_regions_and_cells_and_round_
     let s2 = back.styles.cell.iter().find(|c| c.name == "Cap").unwrap();
     assert_eq!(s2.first_baseline, Some(FirstBaseline::CapHeight));
 }
+
+/// The small cap size round-trips as TextPreference `SmallCap`.
+#[test]
+fn small_cap_size_round_trips() {
+    let mut d = import_idml_with(&fixture(), &|_| None).unwrap();
+    assert_eq!(d.settings.advanced_type.small_cap_size, 70.0);
+    d.settings.advanced_type.small_cap_size = 77.5;
+    let back = import_idml_with(&export_idml(&d), &|_| None).unwrap();
+    assert_eq!(back.settings.advanced_type.small_cap_size, 77.5);
+}

@@ -1714,6 +1714,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Straight Double Quotation Marks", "Прямые двойные кавычки"),
     ("Straight Single Quotation Mark (Apostrophe)", "Прямая одинарная кавычка (апостроф)"),
     ("Subscript:", "Нижний индекс:"),
+    ("Small Cap:", "Капители:"),
+    ("Use the Font's Small Caps", "Использовать капители шрифта"),
     ("Superscript:", "Верхний индекс:"),
     ("Tab", "Табуляция"),
     ("Thin Space", "Тонкий пробел"),

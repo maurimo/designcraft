@@ -1973,6 +1973,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Straight Double Quotation Marks", "علامتا اقتباس مستقيمتان مزدوجتان"),
     ("Straight Single Quotation Mark (Apostrophe)", "علامة اقتباس مستقيمة مفردة (فاصلة عليا)"),
     ("Subscript:", "رمز سفلي:"),
+    ("Small Cap:", "الأحرف الكبيرة المصغّرة:"),
+    ("Use the Font's Small Caps", "استخدام الأحرف الكبيرة المصغّرة للخط"),
     ("Superscript:", "رمز علوي:"),
     ("Tab", "جدولة"),
     ("Table of Contents", "جدول المحتويات"),

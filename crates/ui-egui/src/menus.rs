@@ -1371,9 +1371,10 @@ fn run_ui_inner(app: &mut DesignApp, id: &str, p: &Value) -> Option<Result<Value
                 f["rulerOrigin"] = doc["rulerOrigin"].clone();
                 f["overprintBlack"] = doc["overprintBlack"].clone();
                 f["glyphFallback"] = doc["glyphFallback"].clone();
-                for k in ["superscriptSize", "superscriptPosition", "subscriptSize", "subscriptPosition"] {
+                for k in ["superscriptSize", "superscriptPosition", "subscriptSize", "subscriptPosition", "smallCapSize"] {
                     f[format!("adv.{k}")] = json!(format!("{}", doc["advancedType"][k].as_f64().unwrap_or(0.0)));
                 }
+                f["adv.fontSmallCaps"] = json!(doc["advancedType"]["fontSmallCaps"].as_bool().unwrap_or(true));
                 f["verticalUnits"] = doc["verticalUnits"].clone();
                 let words = app.session.execute("spelling.words", &json!({})).unwrap_or_default();
                 f["userWords"] =

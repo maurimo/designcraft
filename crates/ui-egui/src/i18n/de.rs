@@ -1768,6 +1768,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Straight Double Quotation Marks", "Gerade doppelte Anführungszeichen"),
     ("Straight Single Quotation Mark (Apostrophe)", "Gerades einfaches Anführungszeichen (Apostroph)"),
     ("Subscript:", "Tiefgestellt:"),
+    ("Small Cap:", "Kapitälchen:"),
+    ("Use the Font's Small Caps", "Kapitälchen der Schrift verwenden"),
     ("Superscript:", "Hochgestellt:"),
     ("Tab", "Tabulator"),
     ("Thin Space", "Achtelgeviert"),

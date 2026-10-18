@@ -1296,6 +1296,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Numbered List", "Нумерований список"),
     ("UPPERCASE", "ВЕЛИКІ ЛІТЕРИ"),
     ("Small Caps", "Капітель"),
+    ("Small Cap:", "Капітель:"),
+    ("Use the Font's Small Caps", "Використовувати капітель шрифту"),
     ("Normal", "Звичайний"),
     ("Butt", "Плоске"),
     ("Round", "Заокруглений"),

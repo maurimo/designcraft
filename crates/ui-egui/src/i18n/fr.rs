@@ -175,6 +175,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Straight Double Quotation Marks", "Guillemets droits doubles"),
     ("Straight Single Quotation Mark (Apostrophe)", "Guillemet droit simple (apostrophe)"),
     ("Subscript:", "Indice :"),
+    ("Small Cap:", "Petites capitales :"),
+    ("Use the Font's Small Caps", "Utiliser les petites capitales de la police"),
     ("Superscript:", "Exposant :"),
     ("Tab", "Tabulation"),
     ("Table of Contents", "Table des matières"),

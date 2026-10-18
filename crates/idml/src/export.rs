@@ -826,7 +826,8 @@ impl<'a> Ex<'a> {
                 .attr("SuperscriptSize", num(a.superscript_size))
                 .attr("SuperscriptPosition", num(a.superscript_position))
                 .attr("SubscriptSize", num(a.subscript_size))
-                .attr("SubscriptPosition", num(a.subscript_position)),
+                .attr("SubscriptPosition", num(a.subscript_position))
+                .attr("SmallCap", num(a.small_cap_size)),
         );
         document(&root)
     }

@@ -686,6 +686,8 @@ pub(super) const TABLE: &[(&str, &str)] = &[
     ("Numbered List", "Lista numerada"),
     ("UPPERCASE", "MAIÚSCULAS"),
     ("Small Caps", "Versalete"),
+    ("Small Cap:", "Versalete:"),
+    ("Use the Font's Small Caps", "Usar o versalete da fonte"),
     ("Butt", "Reta"),
     ("Round", "Arredondada"),
     ("Projecting", "Saliente"),

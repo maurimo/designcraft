@@ -27,6 +27,9 @@ pub struct Glyph {
     /// The part of `adv` the shaper adjusted for the next glyph (pair kerning), in points: a line
     /// that breaks after this glyph doesn't have that neighbour.
     pub kern: f64,
+    /// A lowercase letter drawn as a capital for small caps: the small cap scale (else 1), so
+    /// what is inserted after it (a hyphen) gets the text's full size.
+    pub small_cap: f64,
     pub dx: f64,
     pub dy: f64,
     /// Font units → points (incl. horizontal / vertical scale).
@@ -724,6 +727,59 @@ fn shape_run(
     sub: &SubstCtx,
     out: &mut Vec<Glyph>,
 ) {
+    // Small caps in a font without `smcp` (or with the font's small caps off in Advanced Type):
+    // lowercase letters are set as capitals at the Advanced Type small cap size, the rest of the
+    // text as it is. Tracking, manual kerning and leading stay those of the full size.
+    let scale = env.adv.small_cap_size / 100.0;
+    if p.capitalization == Capitalization::SmallCaps
+        && scale.is_finite()
+        && scale > 0.0
+        && (!env.adv.font_small_caps || !db.face(&p.font_family, &p.font_style).has_feature("smcp"))
+    {
+        let mut small = p.clone();
+        small.capitalization = Capitalization::AllCaps;
+        small.size *= scale;
+        small.tracking /= scale;
+        if let Kerning::Manual(v) = p.kerning {
+            small.kerning = Kerning::Manual(v / scale);
+        }
+        if matches!(p.leading, Leading::Auto) {
+            small.leading = Leading::Points(p.size * env.auto_leading);
+        }
+        let mut rest = p.clone();
+        rest.capitalization = Capitalization::Normal;
+        let lower = |c: char| c.is_lowercase() && !c.to_uppercase().eq(std::iter::once(c));
+        let mut at = range.start;
+        while at < range.end {
+            let piece = text.get(at..range.end).unwrap_or("");
+            let first = piece.chars().next().is_some_and(lower);
+            let len = piece.char_indices().find(|&(_, c)| lower(c) != first).map_or(piece.len(), |(i, _)| i);
+            if len == 0 {
+                break;
+            }
+            let begin = out.len();
+            shape_run_one(db, text, at..at + len, if first { &small } else { &rest }, env, styles, sub, out);
+            if first {
+                out.iter_mut().skip(begin).for_each(|g| g.small_cap = scale);
+            }
+            at += len;
+        }
+        return;
+    }
+    shape_run_one(db, text, range, p, env, styles, sub, out);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shape_run_one(
+    db: &ScopedFonts<'_>,
+    text: &str,
+    range: std::ops::Range<usize>,
+    p: &CharProps,
+    env: TypeEnv,
+    styles: &StyleRuns<'_>,
+    sub: &SubstCtx,
+    out: &mut Vec<Glyph>,
+) {
     let start = out.len();
     shape_run_raw(db, text, range, p, env, styles, sub, out);
     let run = &mut out[start..];
@@ -1116,6 +1172,7 @@ fn control_glyph(face: &Arc<FontFace>, p: &CharProps, auto_leading: TypeEnv, sty
         generated_text: None,
         adv: 0.0,
         kern: 0.0,
+        small_cap: 1.0,
         dx: 0.0,
         dy: 0.0,
         sx: k * p.h_scale,
@@ -1284,6 +1341,7 @@ fn shape_segment(
             generated_text,
             adv,
             kern: if ch == SOFT_HYPHEN { 0.0 } else { kern },
+            small_cap: 1.0,
             dx: dx + mark_x,
             dy: dy - mark_y,
             sx: k * hs,
@@ -1437,6 +1495,16 @@ fn fit_auto_tcy(glyphs: &mut [Glyph], auto: &[std::ops::Range<usize>]) {
 pub(crate) fn hyphen_after(g: &Glyph) -> Glyph {
     let gid = designcraft_fonts::first_glyph(&g.face, &['-', '\u{2010}']);
     let mut h = g.clone();
+    if g.small_cap != 1.0 && g.small_cap > 0.0 {
+        let k = 1.0 / g.small_cap;
+        h.small_cap = 1.0;
+        h.size *= k;
+        h.sx *= k;
+        h.sy *= k;
+        for v in [&mut h.ascent, &mut h.typo_ascent, &mut h.descent, &mut h.cap, &mut h.xh, &mut h.space] {
+            *v *= k;
+        }
+    }
     h.gid = gid;
     h.adv = g.face.advance(gid) * g.sx;
     h.dx = 0.0;
